@@ -48,3 +48,41 @@ def test_base_agent_name_defaults_to_class_name() -> None:
     concrete subclass's __name__ (e.g. '_NoopAgent')."""
     agent = _NoopAgent()
     assert agent.name == "_NoopAgent"
+
+
+def test_stream_returns_final_ai_message() -> None:
+    """Spec test 2: BaseAgent.stream() must yield events whose on_chain_end
+    payload contains an AIMessage with the model's reply content."""
+    from tests.agents.conftest import ToolAwareFakeChatModel, make_ai
+    from langchain.agents import create_agent
+    from langchain.agents.middleware import AgentMiddleware
+
+    class _NoRetry(AgentMiddleware):
+        def wrap_tool_call(self, request, handler):  # type: ignore[no-untyped-def]
+            return handler(request)
+
+    model = ToolAwareFakeChatModel(responses=[make_ai("hello back")])
+    agent = _NoopAgent(system_prompt="test", tools=[])
+
+    # Replace the agent's graph builder with one that uses the fake model.
+    graph = create_agent(
+        model=model,
+        tools=list(agent.tools),
+        system_prompt=agent.system_prompt_value,
+        middleware=[_NoRetry()],
+    )
+    agent._build_graph = lambda: graph  # type: ignore[method-assign]
+
+    final_output: dict | None = None
+    for event in agent.stream([HumanMessage(content="hi")]):
+        if event.get("event") == "on_chain_end":
+            data = event.get("data") or {}
+            out = data.get("output")
+            if isinstance(out, dict) and "messages" in out:
+                final_output = out
+
+    assert final_output is not None
+    messages = final_output.get("messages", [])
+    assert any(
+        getattr(m, "content", "") == "hello back" for m in messages
+    ), f"Expected 'hello back' in final messages, got {messages!r}"
