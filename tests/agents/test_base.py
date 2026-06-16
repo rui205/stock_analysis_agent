@@ -5,6 +5,7 @@ import pytest
 from langchain_core.messages import HumanMessage
 
 from stock_analysis_agent.agents.base import BaseAgent
+from stock_analysis_agent.agents.exceptions import ToolExecutionError
 
 
 class _NoopAgent(BaseAgent):
@@ -214,3 +215,56 @@ async def test_base_agent_astream_yields_events() -> None:
 
     assert "on_chain_start" in events
     assert "on_chain_end" in events
+
+
+def test_tool_error_retries_then_raises_via_agent() -> None:
+    """Spec test 4: when a tool raises transient errors, the agent
+    must retry and eventually surface ToolExecutionError to the caller."""
+    import asyncio
+    from langchain.agents import create_agent
+    from langchain.tools import tool
+    from langchain_core.messages import ToolMessage
+
+    from tests.agents.conftest import ToolAwareFakeChatModel, make_ai, make_tool_call
+
+    call_count = {"n": 0}
+
+    @tool
+    def flaky_tool(query: str) -> str:
+        """A flaky tool that always raises TimeoutError."""
+        call_count["n"] += 1
+        raise TimeoutError("upstream timeout")
+
+    first_response = make_ai("")
+    first_response.tool_calls = [
+        make_tool_call("flaky_tool", {"query": "x"}, "call_flaky_1")
+    ]
+    model = ToolAwareFakeChatModel(
+        responses=[first_response, make_ai("never reached")]
+    )
+
+    agent = _NoopAgent(
+        system_prompt="test",
+        tools=[flaky_tool],
+        max_retries=2,
+    )
+
+    # Build the graph manually with the fake model so the test does not
+    # depend on a live model call. The retry middleware is the real one.
+    from stock_analysis_agent.agents.base import _ToolRetryMiddleware
+
+    graph = create_agent(
+        model=model,
+        tools=[flaky_tool],
+        system_prompt="test",
+        middleware=[_ToolRetryMiddleware(max_retries=2, initial_delay=0.0, backoff_factor=0.0)],
+    )
+    agent._build_graph = lambda: graph  # type: ignore[method-assign]
+
+    with pytest.raises(ToolExecutionError):
+        # Drain the full stream — the middleware will raise during execution.
+        for _ in agent.stream([HumanMessage(content="use flaky_tool")]):
+            pass
+
+    assert call_count["n"] == 3, f"expected 3 attempts, got {call_count['n']}"
+

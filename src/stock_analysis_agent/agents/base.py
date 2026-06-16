@@ -109,6 +109,11 @@ class BaseAgent:
         the async `astream_events` API, then yields events to the caller
         synchronously. Each call to `stream` runs in an isolated thread
         and event loop, so the base class remains stateless.
+
+        Exceptions raised inside the async drain are captured by the
+        runner thread and re-raised to the consumer on the sentinel
+        boundary, so a failure in the agent graph surfaces to the
+        caller instead of hanging the consumer's `event_queue.get()`.
         """
         import asyncio
         import queue
@@ -117,15 +122,20 @@ class BaseAgent:
         graph = self._build_graph()
         event_queue: queue.Queue = queue.Queue()
         sentinel = object()
+        exception_holder: list[BaseException] = []
 
         async def _drain() -> None:
-            async for event in graph.astream_events(
-                {"messages": list(messages)},
-                version="v2",
-                config=config,
-            ):
-                event_queue.put(event)
-            event_queue.put(sentinel)
+            try:
+                async for event in graph.astream_events(
+                    {"messages": list(messages)},
+                    version="v2",
+                    config=config,
+                ):
+                    event_queue.put(event)
+            except BaseException as exc:
+                exception_holder.append(exc)
+            finally:
+                event_queue.put(sentinel)
 
         def _runner() -> None:
             loop = asyncio.new_event_loop()
@@ -136,12 +146,16 @@ class BaseAgent:
 
         thread = threading.Thread(target=_runner, daemon=True)
         thread.start()
-        while True:
-            event = event_queue.get()
-            if event is sentinel:
-                break
-            yield event
-        thread.join()
+        try:
+            while True:
+                event = event_queue.get()
+                if event is sentinel:
+                    if exception_holder:
+                        raise exception_holder[0]
+                    break
+                yield event
+        finally:
+            thread.join()
 
     async def astream(
         self,
