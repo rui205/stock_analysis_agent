@@ -86,3 +86,61 @@ def test_stream_returns_final_ai_message() -> None:
     assert any(
         getattr(m, "content", "") == "hello back" for m in messages
     ), f"Expected 'hello back' in final messages, got {messages!r}"
+
+
+def test_stream_emits_tool_events() -> None:
+    """Spec test 3: when the model makes a tool call, the event stream
+    must include `on_tool_start` and `on_tool_end`."""
+    from langchain.tools import tool
+
+    from tests.agents.conftest import ToolAwareFakeChatModel, make_ai, make_tool_call
+
+    @tool
+    def echo(value: str) -> str:
+        """Echo a value back."""
+        return value
+
+    model = ToolAwareFakeChatModel(
+        responses=[
+            make_ai(""),
+            make_ai("done"),
+        ]
+    )
+    # Force the first response to include a tool call.
+    model.responses[0] = make_ai("")
+    model.responses[0].tool_calls = [make_tool_call("echo", {"value": "hi"}, "call_echo_1")]
+
+    agent = _NoopAgent(system_prompt="test", tools=[echo])
+
+    # Build graph manually with the fake model so we can test event flow.
+    from langchain.agents import create_agent
+    from langchain.agents.middleware import AgentMiddleware
+
+    class _NoRetry(AgentMiddleware):
+        def wrap_tool_call(self, request, handler):  # type: ignore[no-untyped-def]
+            return handler(request)
+
+        async def awrap_tool_call(self, request, handler):  # type: ignore[no-untyped-def]
+            return await handler(request)
+
+    graph = create_agent(
+        model=model,
+        tools=[echo],
+        system_prompt="test",
+        middleware=[_NoRetry()],
+    )
+
+    import asyncio
+    events: list[str] = []
+
+    async def _drain() -> None:
+        async for event in graph.astream_events(
+            {"messages": [HumanMessage(content="echo please")]},
+            version="v2",
+        ):
+            events.append(event["event"])
+
+    asyncio.run(_drain())
+
+    assert "on_tool_start" in events, f"Expected on_tool_start in {events!r}"
+    assert "on_tool_end" in events, f"Expected on_tool_end in {events!r}"
