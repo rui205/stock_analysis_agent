@@ -268,3 +268,50 @@ def test_tool_error_retries_then_raises_via_agent() -> None:
 
     assert call_count["n"] == 3, f"expected 3 attempts, got {call_count['n']}"
 
+
+def test_messages_are_stateless() -> None:
+    """Spec test 5: two consecutive `stream` calls with the same input
+    must produce equivalent results without cross-contamination."""
+    from tests.agents.conftest import ToolAwareFakeChatModel, make_ai
+
+    model = ToolAwareFakeChatModel(responses=[make_ai("reply-1"), make_ai("reply-2")])
+
+    # Build a graph wired to the dual-response fake model.
+    from langchain.agents import create_agent
+    from langchain.agents.middleware import AgentMiddleware
+
+    class _NoRetry(AgentMiddleware):
+        def wrap_tool_call(self, request, handler):  # type: ignore[no-untyped-def]
+            return handler(request)
+        async def awrap_tool_call(self, request, handler):  # type: ignore[no-untyped-def]
+            return await handler(request)
+
+    graph = create_agent(
+        model=model,
+        tools=[],
+        system_prompt="test",
+        middleware=[_NoRetry()],
+    )
+
+    agent = _NoopAgent(system_prompt="test", tools=[])
+    agent._build_graph = lambda: graph  # type: ignore[method-assign]
+
+    inputs = [HumanMessage(content="hi")]
+
+    def _last_ai_text() -> str:
+        last_ai_text: str | None = None
+        for event in agent.stream(inputs):
+            if event.get("event") == "on_chain_end":
+                data = event.get("data") or {}
+                out = data.get("output")
+                # The final chain-end event has a dict output with messages.
+                if isinstance(out, dict) and "messages" in out:
+                    messages = out.get("messages", [])
+                    if messages:
+                        last_ai_text = getattr(messages[-1], "content", "")
+        assert last_ai_text is not None, "no on_chain_end event with messages observed"
+        return last_ai_text
+
+    assert _last_ai_text() == "reply-1"
+    assert _last_ai_text() == "reply-2"
+
