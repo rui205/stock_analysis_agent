@@ -31,7 +31,7 @@
     │
     │  stream(messages) -> Iterator[StreamEvent]
     ▼
-BaseAgent  (抽象基类, src/stock_analysis_agent/agents/base.py)
+BaseAgent  (可复用基类, src/stock_analysis_agent/agents/base.py)
     │
     │  内部: langchain.agents.create_agent(...)
     │        + 自定义 ToolRetryMiddleware
@@ -48,30 +48,28 @@ CompiledStateGraph (LangChain 内置)
 
 **文件:** `src/stock_analysis_agent/agents/base.py`
 
+`BaseAgent` 是**具体可实例化的类**,不是 ABC。所有配置通过构造函数传入,派生类的作用是预设这些配置(`system_prompt` / `tools` / `model` 等),共享基类的流式与重试逻辑。
+
 ```python
-import abc
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from langchain.tools import BaseTool
 from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableConfig
 
-class BaseAgent(abc.ABC):
+DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
+
+class BaseAgent:
     def __init__(
         self,
+        *,
+        system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        tools: Sequence[BaseTool | Callable] = (),
         model: str = "claude-sonnet-4-6",
         temperature: float = 0.0,
         max_tokens: int = 4096,
         max_retries: int = 2,
-        tools: Sequence[BaseTool | Callable] | None = None,
+        name: str | None = None,
     ) -> None: ...
-
-    @property
-    @abstractmethod
-    def system_prompt(self) -> str: ...
-
-    @property
-    @abstractmethod
-    def tools(self) -> list[BaseTool]: ...
 
     def stream(
         self,
@@ -92,13 +90,13 @@ class BaseAgent(abc.ABC):
 
 | 参数 | 类型 | 默认 | 说明 |
 |------|------|------|------|
+| `system_prompt` | `str` | 通用助手提示词 | 系统消息,每次对话都加在 messages 开头 |
+| `tools` | `Sequence[BaseTool \| Callable]` | `()` | 工具列表,自动支持 `@tool` 装饰的普通函数(LangChain `create_agent` 内部转换) |
 | `model` | `str` | `"claude-sonnet-4-6"` | 透传给 `init_chat_model` |
 | `temperature` | `float` | `0.0` | 适合分析类任务 |
 | `max_tokens` | `int` | `4096` | 单次模型输出上限 |
 | `max_retries` | `int` | `2` | 工具执行失败时的重试次数(不含首次执行) |
-| `tools` | `Sequence[BaseTool \| Callable]` | `None` | 运行时追加工具;派生类 `tools` 属性返回的列表优先 |
-
-派生类**必须**实现 `system_prompt` 与 `tools` 两个抽象属性,否则 `BaseAgent()` 实例化时抛 `TypeError`(Python ABC 内置行为)。
+| `name` | `str \| None` | `None` | 用于 LangGraph Studio 显示;不传则自动用类名 |
 
 ---
 
@@ -111,16 +109,15 @@ from stock_analysis_agent.tools.financial import get_financial_statements
 from stock_analysis_agent.tools.company import get_company_profile
 
 class FundamentalAgent(BaseAgent):
-    @property
-    def system_prompt(self) -> str:
-        return "You are a fundamental analysis expert..."
-
-    @property
-    def tools(self) -> list[BaseTool]:
-        return [get_financial_statements, get_company_profile]
+    def __init__(self) -> None:
+        super().__init__(
+            system_prompt="You are a fundamental analysis expert...",
+            tools=[get_financial_statements, get_company_profile],
+            name="fundamental",
+        )
 ```
 
-派生类只关注"提示词 + 工具",不关心模型调用、流式、重试这些横切关注点。
+派生类只预设"提示词 + 工具 + 名字",不关心模型调用、流式、重试这些横切关注点。如需重写默认 `model` 或 `temperature`,在自己的 `__init__` 显式传入即可。
 
 ---
 
@@ -167,8 +164,8 @@ class ToolExecutionError(RuntimeError):
 
 TDD 顺序(先红后绿):
 
-1. `test_subclass_must_implement_abstract_props`
-   - 不实现 `system_prompt` 或 `tools` 的子类不能实例化 → `TypeError`
+1. `test_base_agent_uses_default_system_prompt`
+   - 不传 `system_prompt` 时,`BaseAgent()` 实例化成功,且提示词等于默认常量
 2. `test_stream_returns_final_ai_message`
    - 喂入简单问题(`"hi"`),遍历事件流到 `on_chain_end`,断言最终 messages 含一条 `AIMessage`
 3. `test_stream_emits_tool_events`
