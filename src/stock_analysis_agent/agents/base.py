@@ -144,10 +144,17 @@ class BaseAgent:
     ) -> AsyncIterator[dict[str, Any]]:
         """Async stream of LangChain events from a fresh agent run.
 
-        Implemented in Task 7; declared here for type completeness.
+        Builds a fresh graph on each call and consumes its
+        `astream_events` generator. No internal state is retained
+        between calls.
         """
-        raise NotImplementedError
-        yield  # pragma: no cover  (makes this a generator for type checkers)
+        graph = self._build_graph()
+        async for event in graph.astream_events(
+            {"messages": list(messages)},
+            version="v2",
+            config=config,
+        ):
+            yield event
 
 
 class _ToolRetryMiddleware(AgentMiddleware):

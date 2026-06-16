@@ -144,3 +144,73 @@ def test_stream_emits_tool_events() -> None:
 
     assert "on_tool_start" in events, f"Expected on_tool_start in {events!r}"
     assert "on_tool_end" in events, f"Expected on_tool_end in {events!r}"
+
+
+@pytest.mark.asyncio
+async def test_astream_returns_events() -> None:
+    """astream() must be an async iterator yielding dict events with
+    an 'event' key."""
+    from tests.agents.conftest import ToolAwareFakeChatModel, make_ai
+
+    model = ToolAwareFakeChatModel(responses=[make_ai("ok")])
+    agent = _NoopAgent(system_prompt="test", tools=[])
+
+    # Build graph manually with the fake model.
+    from langchain.agents import create_agent
+    from langchain.agents.middleware import AgentMiddleware
+
+    class _NoRetry(AgentMiddleware):
+        def wrap_tool_call(self, request, handler):  # type: ignore[no-untyped-def]
+            return handler(request)
+        async def awrap_tool_call(self, request, handler):  # type: ignore[no-untyped-def]
+            return await handler(request)
+
+    graph = create_agent(
+        model=model,
+        tools=[],
+        system_prompt="test",
+        middleware=[_NoRetry()],
+    )
+
+    events: list[str] = []
+    async for event in graph.astream_events(
+        {"messages": [HumanMessage(content="hi")]},
+        version="v2",
+    ):
+        events.append(event["event"])
+
+    assert "on_chain_start" in events
+    assert "on_chain_end" in events
+
+
+@pytest.mark.asyncio
+async def test_base_agent_astream_yields_events() -> None:
+    """BaseAgent.astream() must yield dict events with an 'event' key."""
+    from tests.agents.conftest import ToolAwareFakeChatModel, make_ai
+
+    from langchain.agents import create_agent
+    from langchain.agents.middleware import AgentMiddleware
+
+    class _NoRetry(AgentMiddleware):
+        def wrap_tool_call(self, request, handler):  # type: ignore[no-untyped-def]
+            return handler(request)
+        async def awrap_tool_call(self, request, handler):  # type: ignore[no-untyped-def]
+            return await handler(request)
+
+    model = ToolAwareFakeChatModel(responses=[make_ai("hello back")])
+    graph = create_agent(
+        model=model,
+        tools=[],
+        system_prompt="test",
+        middleware=[_NoRetry()],
+    )
+
+    agent = _NoopAgent(system_prompt="test", tools=[])
+    agent._build_graph = lambda: graph  # type: ignore[method-assign]
+
+    events: list[str] = []
+    async for event in agent.astream([HumanMessage(content="hi")]):
+        events.append(event["event"])
+
+    assert "on_chain_start" in events
+    assert "on_chain_end" in events
