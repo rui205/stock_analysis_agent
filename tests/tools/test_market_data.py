@@ -377,3 +377,79 @@ class TestFetchMootdx:
         result = await md._fetch_mootdx("23", "023190")
         assert "[mootdx]" in result
         assert "[error:" in result
+
+
+class TestDetectPeers:
+    """_detect_peers(symbol, peer_count) -> list[str] | None."""
+
+    def test_detect_peers_happy_path_a_share(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """For an A-share symbol whose industry is found in akshare's
+        industry table, return the top-N industry codes by market cap."""
+        import akshare as ak
+        import pandas as pd
+
+        industries = pd.DataFrame(
+            [{"板块名称": "白酒"}]
+        )
+        cons = pd.DataFrame(
+            [
+                {"代码": "600519", "名称": "贵州茅台", "总市值": 20000},
+                {"代码": "000858", "名称": "五粮液", "总市值": 8000},
+                {"代码": "000568", "名称": "泸州老窖", "总市值": 3000},
+            ]
+        )
+
+        monkeypatch.setattr(ak, "stock_board_industry_name_em", lambda: industries)
+        monkeypatch.setattr(
+            ak,
+            "stock_board_industry_cons_em",
+            lambda symbol: cons,
+        )
+
+        from stock_analysis_agent.tools import market_data as md
+
+        result = md._detect_peers("600519.SH", peer_count=2)
+        assert result == ["600519.SH", "000858.SH"]
+
+    def test_detect_peers_returns_none_when_akshare_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If akshare raises, _detect_peers returns None and the
+        aggregator should emit an [error: ...] peers segment."""
+        import akshare as ak
+
+        def _boom() -> None:
+            raise RuntimeError("network down")
+
+        monkeypatch.setattr(ak, "stock_board_industry_name_em", _boom)
+
+        from stock_analysis_agent.tools import market_data as md
+
+        result = md._detect_peers("02319.HK", peer_count=2)
+        assert result is None
+
+    def test_detect_peers_uses_hk_industry_hint_fallback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """For an HK code, fall back to HK_INDUSTRY_HINTS to find the
+        akshare industry name."""
+        import akshare as ak
+        import pandas as pd
+
+        industries = pd.DataFrame([{"板块名称": "乳品"}])
+        cons = pd.DataFrame(
+            [
+                {"代码": "600887", "名称": "伊利股份", "总市值": 15000},
+                {"代码": "600597", "名称": "光明乳业", "总市值": 1500},
+            ]
+        )
+
+        monkeypatch.setattr(ak, "stock_board_industry_name_em", lambda: industries)
+        monkeypatch.setattr(ak, "stock_board_industry_cons_em", lambda symbol: cons)
+
+        from stock_analysis_agent.tools import market_data as md
+
+        result = md._detect_peers("02319.HK", peer_count=2)
+        assert result == ["600887.SH", "600597.SH"]

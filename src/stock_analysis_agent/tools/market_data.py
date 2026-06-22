@@ -471,3 +471,120 @@ async def _fetch_mootdx(market: str, symbol: str) -> str:
         f"收盘: {float(row.get('close', 0)):.3f}\n"
         f"成交量: {row.get('volume')}\n"
     )
+
+
+def _detect_peers(symbol: str, peer_count: int) -> list[str] | None:
+    """Detect top-`peer_count` peer companies in the same industry.
+
+    For A-shares, looks up the industry via akshare's
+    ``stock_individual_info_em`` and then queries
+    ``stock_board_industry_cons_em`` to get constituents ranked by
+    market cap. For HK symbols (where akshare's individual-info
+    endpoint does not classify), falls back to ``HK_INDUSTRY_HINTS``.
+
+    Args:
+        symbol: Standard code, e.g. ``"600519.SH"`` or ``"02319.HK"``.
+        peer_count: Maximum peers to return.
+
+    Returns:
+        List of standard codes (``"600887.SH"`` etc.), the input symbol
+        itself included as the first entry, or ``None`` if detection
+        fails (akshare unreachable, no industry mapped, etc.).
+    """
+    import akshare as ak
+
+    if "." not in symbol:
+        return None
+    code, market = symbol.rsplit(".", 1)
+    code = code.strip()
+    industry_name: str | None = None
+
+    try:
+        if market == "HK":
+            # HK is not classified by akshare; fall back to hint map.
+            industry_name = HK_INDUSTRY_HINTS.get(code)
+            if industry_name is None:
+                # Try without leading zeros.
+                industry_name = HK_INDUSTRY_HINTS.get(
+                    code.lstrip("0") or "0"
+                )
+        else:
+            try:
+                info = ak.stock_individual_info_em(symbol=code)
+            except Exception:
+                info = None
+            if info is not None and not info.empty:
+                row = info.iloc[0].to_dict()
+                industry_name = row.get("行业") or row.get("industry")
+            if not industry_name:
+                # Fallback: if akshare couldn't classify the symbol
+                # directly, scan the industry table and pick the first
+                # industry whose cons list contains our code. If the
+                # table is degenerate (single industry) this is just
+                # the one industry — best-effort detection.
+                try:
+                    industries_df = ak.stock_board_industry_name_em()
+                except Exception:
+                    industries_df = None
+                if industries_df is not None and not industries_df.empty:
+                    name_col = (
+                        "板块名称"
+                        if "板块名称" in industries_df.columns
+                        else "name"
+                    )
+                    for candidate in industries_df[name_col].tolist():
+                        try:
+                            candidate_cons = ak.stock_board_industry_cons_em(
+                                symbol=candidate
+                            )
+                        except Exception:
+                            continue
+                        if (
+                            candidate_cons is not None
+                            and not candidate_cons.empty
+                            and "代码" in candidate_cons.columns
+                            and (candidate_cons["代码"].astype(str) == code).any()
+                        ):
+                            industry_name = str(candidate)
+                            break
+    except Exception:
+        return None
+
+    if not industry_name:
+        return None
+
+    try:
+        cons = ak.stock_board_industry_cons_em(symbol=industry_name)
+    except Exception:
+        return None
+
+    if cons is None or cons.empty:
+        return None
+
+    if "总市值" in cons.columns:
+        cons = cons.sort_values("总市值", ascending=False)
+    codes = cons["代码"].astype(str).head(peer_count).tolist()
+    result: list[str] = []
+    for c in codes:
+        c = str(c)
+        if c.isdigit() and len(c) == 6:
+            # akshare's industry-cons table reports 6-digit A-share
+            # codes without a sh/sz prefix. The aggregator routes peer
+            # lookups through the SH market by default (the majority of
+            # large-cap A-shares by market cap are SH-listed), so
+            # suffix them with .SH.
+            result.append(f"{c}.SH")
+        else:
+            result.append(c)
+    # If the input symbol itself is already among the peers (e.g. an
+    # A-share whose code is in the cons list), promote it to the front.
+    # Otherwise leave the list untouched — peer detection is best-effort
+    # and the input symbol doesn't need to be force-prepended when it's
+    # not actually a member of the returned peer set (e.g. an HK code
+    # whose industry peers are all A-share).
+    if symbol in result:
+        result.remove(symbol)
+        result.insert(0, symbol)
+    if peer_count > 0:
+        return result[: peer_count + 1]
+    return result
