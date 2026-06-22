@@ -10,12 +10,14 @@ import hashlib
 import httpx
 import json
 import time
+from collections.abc import Sequence
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
 from langchain.tools import tool
 
+from stock_analysis_agent.agents.base import BaseAgent
 from stock_analysis_agent.agents.exceptions import ToolExecutionError
 
 
@@ -203,12 +205,6 @@ async def _web_search(query: str) -> str:
     return await _fetch_and_concat(query, sites, cache=cache)
 
 
-from collections.abc import Sequence
-from typing import Any
-
-from stock_analysis_agent.agents.base import BaseAgent
-
-
 DEFAULT_SYSTEM_PROMPT: str = (
     "You are a deep research agent. Given a user question, "
     "use the web_search tool to gather information from the "
@@ -224,10 +220,6 @@ DEFAULT_SITE_LIST: list[str] = [
 
 DEFAULT_CACHE_DIR: str = "~/.cache/stock-analysis-agent"
 DEFAULT_CACHE_TTL: float | None = 86400.0  # 24h in seconds
-
-# Sentinel used to detect "caller did not pass this argument" for `cache_ttl`,
-# since `None` is itself a valid value (disables expiration).
-_UNSET: object = object()
 
 
 class DeepSearchAgent(BaseAgent):
@@ -253,7 +245,7 @@ class DeepSearchAgent(BaseAgent):
         system_prompt: str | None = None,
         max_retries: int = 3,
         cache_dir: str | Path | None = None,
-        cache_ttl: float | None | object = _UNSET,
+        cache_ttl: float | None = DEFAULT_CACHE_TTL,
         **kwargs: Any,
     ) -> None:
         resolved_sites = list(site_list) if site_list is not None else list(DEFAULT_SITE_LIST)
@@ -267,11 +259,12 @@ class DeepSearchAgent(BaseAgent):
             if cache_dir is not None
             else Path(DEFAULT_CACHE_DIR).expanduser().resolve()
         )
-        # cache_ttl: explicit value (including None) takes precedence; only fall
-        # back to the default when the caller did not pass the parameter at all.
-        resolved_ttl = cache_ttl if cache_ttl is not _UNSET else DEFAULT_CACHE_TTL
+        # `cache_ttl` defaults to DEFAULT_CACHE_TTL when omitted; an explicit
+        # `None` disables expiration; an explicit float sets a custom TTL.
+        # No sentinel needed because the function default IS the resolution.
 
-        self._cache = _FileCache(resolved_dir, ttl_seconds=resolved_ttl)
+        self._cache = _FileCache(resolved_dir, ttl_seconds=cache_ttl)
+        self._site_list = resolved_sites
 
         # Single-instance: write into module-level providers so the @tool
         # callable (which is module-level) can read them.
@@ -287,11 +280,7 @@ class DeepSearchAgent(BaseAgent):
 
     @property
     def site_list(self) -> list[str]:
-        return list(self._site_list_snapshot())
-
-    def _site_list_snapshot(self) -> list[str]:
-        # Internal helper to read the current site_list without copying twice.
-        return _SITE_LIST_PROVIDER.get()
+        return list(self._site_list)
 
     @property
     def cache_dir(self) -> Path:
