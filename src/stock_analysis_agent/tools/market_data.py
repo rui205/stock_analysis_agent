@@ -326,10 +326,13 @@ async def _fetch_tushare(
         d = daily[0]
         lines.insert(
             0,
-            f"现价: {d.get('close')}  "
-            f"涨跌: {d.get('change')} ({d.get('pct_chg')}%)\n"
-            f"今开: {d.get('open')}  昨收: {d.get('pre_close')}  "
-            f"最高: {d.get('high')}  最低: {d.get('low')}\n"
+            f"现价: {float(d.get('close', 0)):.3f}  "
+            f"涨跌: {float(d.get('change', 0)):+.3f} "
+            f"({float(d.get('pct_chg', 0)):+.2f}%)\n"
+            f"今开: {float(d.get('open', 0)):.3f}  "
+            f"昨收: {float(d.get('pre_close', 0)):.3f}  "
+            f"最高: {float(d.get('high', 0)):.3f}  "
+            f"最低: {float(d.get('low', 0)):.3f}\n"
             f"成交量: {d.get('vol')}  成交额: {d.get('amount')}",
         )
     return "[tushare]\n" + "\n".join(lines) + "\n"

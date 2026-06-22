@@ -236,5 +236,8 @@ class TestFetchTushare:
 
         result = await md._fetch_tushare("02319.HK", token="dummy")
         assert "[tushare]" in result
-        assert "15.89" in result
+        assert "15.890" in result
+        assert "涨跌: +0.320 (+2.06%)" in result
+        assert "最高: 15.940" in result
+        assert "最低: 15.340" in result
         assert "蒙牛乳业" in result or "乳品" in result
