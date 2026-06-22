@@ -284,7 +284,9 @@ class TestFetchAkshare:
 
         result = await md._fetch_akshare("02319")
         assert "[akshare]" in result
-        assert "15.89" in result or "蒙牛乳业" in result
+        assert "15.890" in result
+        assert "蒙牛乳业" in result
+        assert "PE" in result
 
     @pytest.mark.asyncio
     async def test_fetch_akshare_returns_error_segment_on_failure(

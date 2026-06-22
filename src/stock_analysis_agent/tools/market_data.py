@@ -377,7 +377,7 @@ async def _fetch_akshare(code: str) -> str:
 
     # Find the row matching our code (strip sh/sz prefix if present).
     needle = code.replace("sh", "").replace("sz", "")
-    match = df[df["代码"].astype(str).str.contains(needle, na=False)]
+    match = df[df["代码"].astype(str) == needle]
     if match.empty:
         return f"[akshare]\n[error: {needle} not found in spot data]\n"
     row = match.iloc[0].to_dict()
@@ -386,10 +386,19 @@ async def _fetch_akshare(code: str) -> str:
         v = row.get(key, "--")
         return "--" if v in (None, "", float("nan")) else str(v)
 
+    def _price(key: str) -> str:
+        v = _g(key)
+        if v == "--":
+            return "--"
+        try:
+            return f"{float(v):.3f}"
+        except ValueError:
+            return v
+
     return (
         "[akshare]\n"
         f"名称: {_g('名称')}\n"
-        f"现价: {_g('最新价')}\n"
+        f"现价: {_price('最新价')}\n"
         f"涨跌: {_g('涨跌额')} ({_g('涨跌幅')}%)\n"
         f"今开: {_g('今开')}  昨收: {_g('昨收')}  "
         f"最高: {_g('最高')}  最低: {_g('最低')}\n"
