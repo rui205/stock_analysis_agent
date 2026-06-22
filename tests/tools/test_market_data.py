@@ -167,3 +167,74 @@ class TestFetchTencent:
         )
         assert "[error:" in result
         assert "[tencent]" in result
+
+
+class TestFetchTushare:
+    """_fetch_tushare(code, token) -> str using tushare.pro_api."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_tushare_returns_error_when_token_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No TUSHARE_TOKEN env var -> [tushare]\\n[error: TUSHARE_TOKEN not set]\\n"""
+        monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
+
+        result = await md._fetch_tushare("02319.HK", token=None)
+        assert "[tushare]" in result
+        assert "TUSHARE_TOKEN" in result
+        assert "[error:" in result
+
+    @pytest.mark.asyncio
+    async def test_fetch_tushare_happy_path_with_mocked_pro_api(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When token is set and pro_api is monkeypatched to return fake
+        DataFrames, _fetch_tushare should render a snapshot including
+        price and PE fields."""
+        import pandas as pd
+
+        fake_daily = pd.DataFrame(
+            [
+                {
+                    "ts_code": "02319.HK",
+                    "trade_date": "20260622",
+                    "open": 15.570,
+                    "high": 15.940,
+                    "low": 15.340,
+                    "close": 15.890,
+                    "pre_close": 15.570,
+                    "change": 0.320,
+                    "pct_chg": 2.060,
+                    "vol": 17684472.0,
+                    "amount": 278092437.74,
+                }
+            ]
+        )
+        fake_basic = pd.DataFrame(
+            [
+                {
+                    "ts_code": "02319.HK",
+                    "name": "蒙牛乳业",
+                    "industry": "乳品",
+                    "pe": 11.030,
+                    "pb": 1.680,
+                    "total_mv": 387647.0,
+                }
+            ]
+        )
+
+        class _FakePro:
+            def daily(self, **kwargs):  # type: ignore[no-untyped-def]
+                return fake_daily
+
+            def stock_basic(self, **kwargs):  # type: ignore[no-untyped-def]
+                return fake_basic
+
+        import tushare as ts
+
+        monkeypatch.setattr(ts, "pro_api", lambda token: _FakePro())
+
+        result = await md._fetch_tushare("02319.HK", token="dummy")
+        assert "[tushare]" in result
+        assert "15.89" in result
+        assert "蒙牛乳业" in result or "乳品" in result

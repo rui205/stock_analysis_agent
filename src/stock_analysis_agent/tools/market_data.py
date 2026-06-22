@@ -263,3 +263,73 @@ def _parse_tencent_csv(body: str) -> str:
         )
     except (ValueError, IndexError) as e:
         return f"[error: parse failed: {e}]"
+
+
+async def _fetch_tushare(
+    code: str,
+    *,
+    token: str | None = None,
+) -> str:
+    """Fetch a Tushare snapshot for `code` (e.g. ``"02319.HK"``).
+
+    Uses two endpoints:
+      - ``pro.daily`` for the latest OHLCV
+      - ``pro.stock_basic`` for industry, PE, PB, market cap
+
+    The blocking SDK calls are wrapped in ``asyncio.to_thread`` so the
+    event loop is not stalled.
+
+    Args:
+        code: Tushare-format ts_code, e.g. ``"02319.HK"``.
+        token: Optional explicit token; if ``None``, falls back to the
+            ``TUSHARE_TOKEN`` environment variable.
+
+    Returns:
+        A text snippet prefixed with ``[tushare]``. When the token is
+        missing, returns ``[tushare]\n[error: TUSHARE_TOKEN not set]``
+        so the aggregator can still render other sources.
+    """
+    import asyncio
+    import os
+
+    token = token if token is not None else os.environ.get("TUSHARE_TOKEN")
+    if not token:
+        return "[tushare]\n[error: TUSHARE_TOKEN not set]\n"
+
+    try:
+        import tushare as ts
+
+        pro = ts.pro_api(token)
+
+        def _fetch() -> tuple[list[dict], list[dict]]:
+            daily = pro.daily(ts_code=code, limit=1).to_dict("records")
+            basic = pro.stock_basic(
+                ts_code=code, fields="ts_code,name,industry,pe,pb,total_mv"
+            ).to_dict("records")
+            return daily, basic
+
+        daily, basic = await asyncio.to_thread(_fetch)
+    except Exception as e:
+        return f"[tushare]\n[error: {type(e).__name__}: {e}]\n"
+
+    if not basic:
+        return f"[tushare]\n[error: stock_basic returned empty for {code}]\n"
+    info = basic[0]
+    lines = [
+        "名称: " + str(info.get("name", "(unknown)")),
+        "行业: " + str(info.get("industry", "--")),
+        "PE: " + str(info.get("pe", "--")),
+        "PB: " + str(info.get("pb", "--")),
+        "总市值(万): " + str(info.get("total_mv", "--")),
+    ]
+    if daily:
+        d = daily[0]
+        lines.insert(
+            0,
+            f"现价: {d.get('close')}  "
+            f"涨跌: {d.get('change')} ({d.get('pct_chg')}%)\n"
+            f"今开: {d.get('open')}  昨收: {d.get('pre_close')}  "
+            f"最高: {d.get('high')}  最低: {d.get('low')}\n"
+            f"成交量: {d.get('vol')}  成交额: {d.get('amount')}",
+        )
+    return "[tushare]\n" + "\n".join(lines) + "\n"
