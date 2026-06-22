@@ -336,3 +336,21 @@ async def test_fetch_query_param_is_passed(tmp_path: Path) -> None:
     )
 
     assert any("q=search-term" in u for u in seen_urls), f"expected q= param, got {seen_urls!r}"
+
+
+def test_web_search_tool_metadata() -> None:
+    """The @tool _web_search exposes the expected name and args schema."""
+    from stock_analysis_agent.agents.deepsearch import _web_search
+
+    assert _web_search.name == "web_search"
+    # The args schema must include a `query` string field. langchain versions
+    # differ in whether `_web_search.args` is a Pydantic model, a full JSON
+    # schema dict (with a `properties` key), or the properties dict itself.
+    schema = _web_search.args
+    if hasattr(schema, "model_json_schema"):
+        schema = schema.model_json_schema()
+    if isinstance(schema, dict) and "properties" in schema and isinstance(schema["properties"], dict):
+        properties = schema["properties"]
+    else:
+        properties = schema
+    assert "query" in (properties or {}), f"missing query in {schema!r}"

@@ -12,7 +12,9 @@ import json
 import time
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
+from typing import Any, Generic, TypeVar
+
+from langchain.tools import tool
 
 from stock_analysis_agent.agents.exceptions import ToolExecutionError
 
@@ -158,3 +160,41 @@ async def _fetch_and_concat(
 
     parts = [f"[{site}]\n{text}\n" for site, text in results]
     return "\n".join(parts)
+
+
+T = TypeVar("T")
+
+
+class _Provider(Generic[T]):
+    """Module-level singleton holder for a single value.
+
+    The single-instance design (per spec §1) lets us mutate `self.value`
+    on every `DeepSearchAgent.__init__` call, and the @tool _web_search
+    reads it via `.get()` whenever the LLM invokes the tool. Concurrent
+    multi-instance construction is not supported.
+    """
+
+    def __init__(self) -> None:
+        self.value: T | None = None  # type: ignore[assignment]
+
+    def get(self) -> T:
+        if self.value is None:
+            raise RuntimeError("provider was not initialized")
+        return self.value
+
+
+_SITE_LIST_PROVIDER: _Provider[list[str]] = _Provider()
+_CACHE_PROVIDER: _Provider[_FileCache] = _Provider()
+
+
+@tool("web_search")
+async def _web_search(query: str) -> str:
+    """Search the configured site list for `query` and return aggregated text.
+
+    Returns a plain-text concatenation of snippets from each configured
+    site. Sites that error are mentioned in the output but do not abort
+    the search.
+    """
+    sites = _SITE_LIST_PROVIDER.get()
+    cache = _CACHE_PROVIDER.get()
+    return await _fetch_and_concat(query, sites, cache=cache)
