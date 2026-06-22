@@ -1,9 +1,12 @@
 """@tool get_stock_snapshot: fan-out concurrent stock data over 5 sources."""
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Literal
 
 import httpx
+
+from stock_analysis_agent.memory.file_cache import _FileCache
 
 MarketName = Literal["HK", "SH", "SZ"]
 SourceName = Literal["sina", "tencent", "tushare", "akshare", "mootdx"]
@@ -585,4 +588,118 @@ def _detect_peers(symbol: str, peer_count: int) -> list[str] | None:
         result.insert(0, symbol)
     if peer_count > 0:
         return result[: peer_count + 1]
+    return result
+
+
+async def _fetch_and_concat(
+    symbol: str,
+    *,
+    sources: tuple[SourceName, ...],
+    include_peers: bool,
+    peer_count: int,
+    cache: _FileCache | None,
+) -> str:
+    """Aggregate snapshots from all configured sources for `symbol`.
+
+    Behaviour:
+      1. Compute composite cache key and short-circuit on hit.
+      2. Fan out per-source fetches via ``asyncio.gather``.
+      3. If ``include_peers``, detect top-N peers and append a
+         ``[peers]`` section rendered from sina + tencent only.
+      4. If every primary source errored, raise ``ToolExecutionError``.
+      5. Write the aggregated text to cache (best-effort).
+
+    Args:
+        symbol: Standard code, e.g. ``"02319.HK"``.
+        sources: Non-empty tuple of source names.
+        include_peers: Whether to run peer detection + fetch.
+        peer_count: How many top peers to compare.
+        cache: Optional file cache for whole-snapshot memoization.
+
+    Returns:
+        Concatenated text with one section per source plus optional
+        ``[peers]`` section.
+
+    Raises:
+        ValueError: If ``sources`` is empty.
+        ToolExecutionError: If every configured primary source returned
+            an error segment.
+    """
+    from stock_analysis_agent.agent.exceptions import ToolExecutionError
+
+    if not sources:
+        raise ValueError("sources cannot be empty")
+
+    cache_key = (
+        f"{symbol}|{','.join(sorted(sources))}|"
+        f"peers={peer_count if include_peers else 0}"
+    )
+    cache_site = "market_data"
+
+    if cache is not None:
+        hit = cache.get(site=cache_site, query=cache_key)
+        if hit is not None:
+            return hit
+
+    translated = _translate(symbol)
+
+    async def _call(src: SourceName) -> str:
+        try:
+            if src == "sina":
+                return await _fetch_sina(translated["sina"])
+            if src == "tencent":
+                return await _fetch_tencent(translated["tencent"])
+            if src == "tushare":
+                return await _fetch_tushare(
+                    translated["tushare"], token=None
+                )
+            if src == "akshare":
+                return await _fetch_akshare(translated["akshare"])
+            if src == "mootdx":
+                return await _fetch_mootdx(
+                    translated["mootdx"], translated["mootdx_symbol"]
+                )
+            return f"[error: unknown source {src!r}]"
+        except Exception as e:  # noqa: BLE001 — top-level guard
+            return f"[{src}]\n[error: {type(e).__name__}: {e}]\n"
+
+    parts = await asyncio.gather(*(_call(s) for s in sources))
+
+    # If ALL primary sources errored, raise so the retry middleware acts.
+    if parts and all("[error:" in p for p in parts):
+        raise ToolExecutionError(
+            f"all sources failed for {symbol}: {list(sources)}"
+        )
+
+    if include_peers and peer_count > 0:
+        peer_symbols = _detect_peers(symbol, peer_count)
+        if peer_symbols is None:
+            parts.append(
+                "[peers]\n[error: industry detection failed]\n"
+            )
+        else:
+            peer_lines = ["[peers]"]
+            for psym in peer_symbols:
+                try:
+                    ptrans = _translate(psym)
+                    sina_text = await _fetch_sina(ptrans["sina"])
+                    tencent_text = await _fetch_tencent(ptrans["tencent"])
+                except Exception as e:  # noqa: BLE001
+                    peer_lines.append(
+                        f"- {psym}: [error: "
+                        f"{type(e).__name__}: {e}]"
+                    )
+                    continue
+                combined = sina_text + tencent_text
+                peer_lines.append(f"- {psym}:\n{combined.strip()}")
+            parts.append("\n".join(peer_lines) + "\n")
+
+    result = "\n".join(parts)
+
+    if cache is not None:
+        try:
+            cache.set(site=cache_site, query=cache_key, text=result)
+        except OSError:
+            pass  # cache write failure does not fail the search
+
     return result

@@ -466,3 +466,121 @@ class TestDetectPeers:
 
         result = md._detect_peers("02319.HK", peer_count=2)
         assert result == ["600887.SH", "600597.SH"]
+
+
+class TestFetchAndConcat:
+    """_fetch_and_concat aggregator + cache behavior."""
+
+    @pytest.mark.asyncio
+    async def test_concat_runs_in_parallel(self) -> None:
+        """3 sources with ~100ms delay each → total < 250ms (parallel)."""
+        import asyncio
+        import time
+
+        from stock_analysis_agent.tools import market_data as md
+
+        async def _slow_sina(*args, **kwargs):  # type: ignore[no-untyped-def]
+            await asyncio.sleep(0.1)
+            return "[sina]\nok\n"
+
+        async def _slow_tencent(*args, **kwargs):  # type: ignore[no-untyped-def]
+            await asyncio.sleep(0.1)
+            return "[tencent]\nok\n"
+
+        async def _slow_tushare(*args, **kwargs):  # type: ignore[no-untyped-def]
+            await asyncio.sleep(0.1)
+            return "[tushare]\nok\n"
+
+        original_sina = md._fetch_sina
+        original_tencent = md._fetch_tencent
+        original_tushare = md._fetch_tushare
+        md._fetch_sina = _slow_sina  # type: ignore[assignment]
+        md._fetch_tencent = _slow_tencent  # type: ignore[assignment]
+        md._fetch_tushare = _slow_tushare  # type: ignore[assignment]
+        try:
+            start = time.monotonic()
+            result = await md._fetch_and_concat(
+                "02319.HK",
+                sources=("sina", "tencent", "tushare"),
+                include_peers=False,
+                peer_count=0,
+                cache=None,
+            )
+            elapsed = time.monotonic() - start
+        finally:
+            md._fetch_sina = original_sina  # type: ignore[assignment]
+            md._fetch_tencent = original_tencent  # type: ignore[assignment]
+            md._fetch_tushare = original_tushare  # type: ignore[assignment]
+
+        assert elapsed < 0.25, f"expected parallel, took {elapsed:.3f}s"
+        assert "[sina]" in result
+        assert "[tencent]" in result
+        assert "[tushare]" in result
+
+    @pytest.mark.asyncio
+    async def test_concat_partial_failure_does_not_raise(self) -> None:
+        """If one source fails, others still appear, no exception."""
+        from stock_analysis_agent.tools import market_data as md
+
+        async def _ok(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return "[sina]\nok\n"
+
+        async def _boom(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return "[tencent]\n[error: ConnectError: nope]\n"
+
+        async def _ok2(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return "[tushare]\nok\n"
+
+        original_sina = md._fetch_sina
+        original_tencent = md._fetch_tencent
+        original_tushare = md._fetch_tushare
+        md._fetch_sina = _ok  # type: ignore[assignment]
+        md._fetch_tencent = _boom  # type: ignore[assignment]
+        md._fetch_tushare = _ok2  # type: ignore[assignment]
+        try:
+            result = await md._fetch_and_concat(
+                "02319.HK",
+                sources=("sina", "tencent", "tushare"),
+                include_peers=False,
+                peer_count=0,
+                cache=None,
+            )
+        finally:
+            md._fetch_sina = original_sina  # type: ignore[assignment]
+            md._fetch_tencent = original_tencent  # type: ignore[assignment]
+            md._fetch_tushare = original_tushare  # type: ignore[assignment]
+
+        assert "[sina]" in result
+        assert "[tushare]" in result
+        assert "[tencent]" in result
+        assert "[error:" in result
+
+    @pytest.mark.asyncio
+    async def test_concat_all_failure_raises_tool_execution_error(self) -> None:
+        """When every source fails, raise ToolExecutionError so the
+        retry middleware can act."""
+        from stock_analysis_agent.agent.exceptions import ToolExecutionError
+        from stock_analysis_agent.tools import market_data as md
+
+        async def _boom(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return "[sina]\n[error: ConnectError: nope]\n"
+
+        async def _boom2(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return "[tencent]\n[error: ConnectError: nope]\n"
+
+        original_sina = md._fetch_sina
+        original_tencent = md._fetch_tencent
+        md._fetch_sina = _boom  # type: ignore[assignment]
+        md._fetch_tencent = _boom2  # type: ignore[assignment]
+        try:
+            with pytest.raises(ToolExecutionError, match="all sources failed"):
+                await md._fetch_and_concat(
+                    "02319.HK",
+                    sources=("sina", "tencent"),
+                    include_peers=False,
+                    peer_count=0,
+                    cache=None,
+                )
+        finally:
+            md._fetch_sina = original_sina  # type: ignore[assignment]
+            md._fetch_tencent = original_tencent  # type: ignore[assignment]
