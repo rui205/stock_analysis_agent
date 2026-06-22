@@ -179,12 +179,15 @@ class _Provider(Generic[T]):
 
     def get(self) -> T:
         if self.value is None:
-            raise RuntimeError("provider was not initialized")
+            raise RuntimeError(
+                f"{type(self).__name__}.value was not initialized; "
+                "was DeepSearchAgent.__init__ called?"
+            )
         return self.value
 
 
 _SITE_LIST_PROVIDER: _Provider[list[str]] = _Provider()
-_CACHE_PROVIDER: _Provider[_FileCache] = _Provider()
+_CACHE_PROVIDER: _Provider[_FileCache | None] = _Provider()
 
 
 @tool("web_search")
