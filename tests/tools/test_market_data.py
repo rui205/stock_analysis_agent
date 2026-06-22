@@ -1,8 +1,10 @@
 """Tests for stock_analysis_agent.tools.market_data."""
 from __future__ import annotations
 
+import httpx
 import pytest
 
+from stock_analysis_agent.tools import market_data as md
 from stock_analysis_agent.tools.market_data import _translate
 
 
@@ -50,11 +52,10 @@ class TestTranslate:
 class TestFetchSina:
     """_fetch_sina(code) -> str using httpx against hq.sinajs.cn."""
 
+    @pytest.mark.asyncio
     async def test_fetch_sina_parses_hk_quote(self) -> None:
         """Mock the httpx response, assert _fetch_sina returns a snippet
         that includes the parsed price/change fields."""
-        import httpx
-
         sample_csv = (
             'var hq_str_rt_hk02319="MENGNIU DAIRY,蒙牛股份,15.940,15.570,'
             "15.940,15.340,15.890,0.320,2.055,15.880,15.890,"
@@ -67,8 +68,6 @@ class TestFetchSina:
         def _h(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, text=sample_csv)
 
-        from stock_analysis_agent.tools import market_data as md
-
         result = await md._fetch_sina(
             "rt_hk02319",
             transport=httpx.MockTransport(_h),
@@ -80,12 +79,32 @@ class TestFetchSina:
         # Header should mark this as the sina source.
         assert "[sina]" in result
 
+    @pytest.mark.asyncio
+    async def test_fetch_sina_parses_a_share_quote(self) -> None:
+        """Mock the httpx response with a short A-share CSV (fewer than
+        32 fields), assert the A-share branch renders name/open/prev_close/
+        current/high/low."""
+        sample_csv = (
+            'var hq_str_sh600519="贵州茅台,1700.00,1690.00,1710.00,'
+            '1705.00,1695.00,12345.67,12345678,1.234,5.6,...";'
+        )
+
+        def _h(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, text=sample_csv)
+
+        result = await md._fetch_sina(
+            "sh600519",
+            transport=httpx.MockTransport(_h),
+        )
+        # A-share branch should render name + price + OHLC.
+        assert "贵州茅台" in result
+        assert "1710.000" in result
+        assert "[sina]" in result
+
+    @pytest.mark.asyncio
     async def test_fetch_sina_returns_error_segment_on_http_failure(self) -> None:
         """If httpx raises, _fetch_sina returns '[error: ...]' segment,
         not raising."""
-        import httpx
-
-        from stock_analysis_agent.tools import market_data as md
 
         def _h(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("boom")
