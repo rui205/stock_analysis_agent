@@ -487,9 +487,10 @@ def _detect_peers(symbol: str, peer_count: int) -> list[str] | None:
         peer_count: Maximum peers to return.
 
     Returns:
-        List of standard codes (``"600887.SH"`` etc.), the input symbol
-        itself included as the first entry, or ``None`` if detection
-        fails (akshare unreachable, no industry mapped, etc.).
+        List of standard codes (e.g. ``"600887.SH"``). For A-share inputs
+        the symbol itself is promoted to the first entry when it appears
+        in the cons list. Returns ``None`` if detection fails (akshare
+        unreachable, no industry mapped, empty cons, etc.).
     """
     import akshare as ak
 
@@ -567,13 +568,10 @@ def _detect_peers(symbol: str, peer_count: int) -> list[str] | None:
     result: list[str] = []
     for c in codes:
         c = str(c)
-        if c.isdigit() and len(c) == 6:
-            # akshare's industry-cons table reports 6-digit A-share
-            # codes without a sh/sz prefix. The aggregator routes peer
-            # lookups through the SH market by default (the majority of
-            # large-cap A-shares by market cap are SH-listed), so
-            # suffix them with .SH.
+        if c.startswith("6"):
             result.append(f"{c}.SH")
+        elif c.startswith(("0", "3")):
+            result.append(f"{c}.SZ")
         else:
             result.append(c)
     # If the input symbol itself is already among the peers (e.g. an

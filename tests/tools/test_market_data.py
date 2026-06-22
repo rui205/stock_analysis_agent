@@ -408,10 +408,17 @@ class TestDetectPeers:
             lambda symbol: cons,
         )
 
+        fake_info = pd.DataFrame([{"行业": "白酒"}])
+        monkeypatch.setattr(
+            ak,
+            "stock_individual_info_em",
+            lambda symbol: fake_info,
+        )
+
         from stock_analysis_agent.tools import market_data as md
 
         result = md._detect_peers("600519.SH", peer_count=2)
-        assert result == ["600519.SH", "000858.SH"]
+        assert result == ["600519.SH", "000858.SZ"]
 
     def test_detect_peers_returns_none_when_akshare_fails(
         self, monkeypatch: pytest.MonkeyPatch
