@@ -1,7 +1,9 @@
 """@tool get_stock_snapshot: fan-out concurrent stock data over 5 sources."""
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
+
+import httpx
 
 MarketName = Literal["HK", "SH", "SZ"]
 SourceName = Literal["sina", "tencent", "tushare", "akshare", "mootdx"]
@@ -89,3 +91,95 @@ def _translate(symbol: str) -> dict[SourceName, str]:
         "mootdx": "0",
         "mootdx_symbol": code.zfill(6),
     }
+
+
+async def _fetch_sina(
+    code: str,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+    timeout: float = 10.0,
+) -> str:
+    """Fetch a Sina realtime quote for `code` and return formatted text.
+
+    Args:
+        code: Sina-local code, e.g. ``"rt_hk02319"``, ``"sh600519"``.
+        transport: Optional httpx transport (for tests).
+        timeout: HTTP timeout in seconds.
+
+    Returns:
+        A text snippet prefixed with ``[sina]`` and the parsed fields,
+        or ``[sina]\n[error: ...]`` on failure.
+    """
+    url = "https://hq.sinajs.cn/list=" + code
+    headers = {
+        "Referer": "https://finance.sina.com.cn/",
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36"
+        ),
+    }
+    try:
+        client_kwargs: dict[str, Any] = {"timeout": timeout}
+        if transport is not None:
+            client_kwargs["transport"] = transport
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            body = resp.text
+    except Exception as e:
+        return f"[sina]\n[error: {type(e).__name__}: {e}]\n"
+    return "[sina]\n" + _parse_sina_csv(body) + "\n"
+
+
+def _parse_sina_csv(body: str) -> str:
+    """Parse a `var hq_str_xxx="...";` response into readable text.
+
+    Sina's payload is GBK-encoded CSV-ish. The HK-standard layout
+    (name, open, prev_close, current, high, low, change, change_pct,
+    ...) is used when ``len(fields) >= 32``; A-share shares a shorter
+    layout. We render a defensive summary for both.
+    """
+    # Extract the quoted portion.
+    start = body.find('"')
+    end = body.rfind('"')
+    if start < 0 or end <= start:
+        return f"[error: unparseable sina response: {body[:80]!r}]"
+    raw = body[start + 1 : end]
+    fields = raw.split(",")
+    if len(fields) < 6:
+        return f"[error: too few fields: {len(fields)}]"
+    name_cn = fields[0] if fields[0] else "(unknown)"
+    try:
+        if len(fields) >= 32:  # HK layout
+            open_p = float(fields[2])
+            prev_close = float(fields[3])
+            current = float(fields[6])
+            high = float(fields[4])
+            low = float(fields[5])
+            change = float(fields[7])
+            change_pct = float(fields[8])
+            volume = fields[12]
+            amount = fields[11]
+            return (
+                f"名称: {name_cn}\n"
+                f"现价: {current:.3f}\n"
+                f"涨跌: {change:+.3f} ({change_pct:+.2f}%)\n"
+                f"今开: {open_p:.3f}  昨收: {prev_close:.3f}  "
+                f"最高: {high:.3f}  最低: {low:.3f}\n"
+                f"成交量: {volume} 股\n"
+                f"成交额: {amount}\n"
+            )
+        # A-share layout: open, prev_close, current, high, low, ...
+        open_p = float(fields[1])
+        prev_close = float(fields[2])
+        current = float(fields[3])
+        high = float(fields[4])
+        low = float(fields[5])
+        return (
+            f"名称: {name_cn}\n"
+            f"现价: {current:.3f}\n"
+            f"今开: {open_p:.3f}  昨收: {prev_close:.3f}  "
+            f"最高: {high:.3f}  最低: {low:.3f}\n"
+        )
+    except (ValueError, IndexError) as e:
+        return f"[error: parse failed: {e}]"

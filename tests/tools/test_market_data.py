@@ -45,3 +45,54 @@ class TestTranslate:
     def test_translate_unknown_market_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="unsupported market"):
             _translate("02319.XX")
+
+
+class TestFetchSina:
+    """_fetch_sina(code) -> str using httpx against hq.sinajs.cn."""
+
+    async def test_fetch_sina_parses_hk_quote(self) -> None:
+        """Mock the httpx response, assert _fetch_sina returns a snippet
+        that includes the parsed price/change fields."""
+        import httpx
+
+        sample_csv = (
+            'var hq_str_rt_hk02319="MENGNIU DAIRY,蒙牛股份,15.940,15.570,'
+            "15.940,15.340,15.890,0.320,2.055,15.880,15.890,"
+            "278092437.740,17684472,36.161,0.000,17.411,13.374,"
+            '2026/06/22,16:08:16,100|0,N|Y,Y,15.850|15.060|16.640,'
+            "0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,..."
+            '";'
+        )
+
+        def _h(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, text=sample_csv)
+
+        from stock_analysis_agent.tools import market_data as md
+
+        result = await md._fetch_sina(
+            "rt_hk02319",
+            transport=httpx.MockTransport(_h),
+        )
+        # Result must contain the price and the change percent.
+        assert "15.890" in result
+        assert "0.320" in result
+        assert "+2.06%" in result or "2.06%" in result
+        # Header should mark this as the sina source.
+        assert "[sina]" in result
+
+    async def test_fetch_sina_returns_error_segment_on_http_failure(self) -> None:
+        """If httpx raises, _fetch_sina returns '[error: ...]' segment,
+        not raising."""
+        import httpx
+
+        from stock_analysis_agent.tools import market_data as md
+
+        def _h(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("boom")
+
+        result = await md._fetch_sina(
+            "rt_hk02319",
+            transport=httpx.MockTransport(_h),
+        )
+        assert "[error:" in result
+        assert "[sina]" in result
