@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage
 
 from stock_analysis_agent.agents.deepsearch import _FileCache, _extract_text
@@ -461,9 +462,8 @@ def test_web_search_provider_reflects_latest_construction(tmp_path: Path) -> Non
     DeepSearchAgent(site_list=["https://b.test"], cache_dir=tmp_path, cache_ttl=None)
     assert _SITE_LIST_PROVIDER.get() == ["https://b.test"]
 
-def _noop_middleware():  # type: ignore[no-untyped-def]
-    """Build a no-op AgentMiddleware to skip BaseAgent's retry middleware."""
-    from langchain.agents.middleware import AgentMiddleware
+def _bypass_retry_middleware():  # type: ignore[no-untyped-def]
+    """Build an AgentMiddleware that bypasses BaseAgent's retry middleware."""
 
     class _NoRetry(AgentMiddleware):
         def wrap_tool_call(self, request, handler):  # type: ignore[no-untyped-def]
@@ -521,7 +521,7 @@ def test_tool_call_reaches_web_search_with_configured_sites(
             model=model,
             tools=[_web_search],
             system_prompt=agent.system_prompt_value,
-            middleware=[_noop_middleware()],
+            middleware=[_bypass_retry_middleware()],
         )
         agent._build_graph = lambda: graph  # type: ignore[method-assign]
 
@@ -539,20 +539,29 @@ def test_tool_call_reaches_web_search_with_configured_sites(
     )
 
 
-def test_second_agent_overwrites_first_sites(tmp_path: Path) -> None:
-    """Single-instance contract: constructing a second DeepSearchAgent
-    overwrites the module-level provider."""
+def test_second_agent_overwrites_provider_keeps_first_agent_intact(
+    tmp_path: Path,
+) -> None:
+    """Single-instance contract: when a second DeepSearchAgent is constructed,
+    the module-level _SITE_LIST_PROVIDER is overwritten (so @tool _web_search
+    uses the new sites), but the first agent's `agent.site_list` keeps its
+    original sites because each instance stores its own config on self."""
     from stock_analysis_agent.agents.deepsearch import (
         DeepSearchAgent,
         _SITE_LIST_PROVIDER,
     )
 
-    DeepSearchAgent(
+    agent1 = DeepSearchAgent(
         site_list=["https://first.test"], cache_dir=tmp_path, cache_ttl=None
     )
+    assert agent1.site_list == ["https://first.test"]
     assert _SITE_LIST_PROVIDER.get() == ["https://first.test"]
 
     DeepSearchAgent(
         site_list=["https://second.test"], cache_dir=tmp_path, cache_ttl=None
     )
+
+    # Provider is overwritten — the @tool _web_search will use these sites.
     assert _SITE_LIST_PROVIDER.get() == ["https://second.test"]
+    # First agent's snapshot is unchanged — it owns its own config.
+    assert agent1.site_list == ["https://first.test"]
