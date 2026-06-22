@@ -420,17 +420,23 @@ class TestDetectPeers:
         result = md._detect_peers("600519.SH", peer_count=2)
         assert result == ["600519.SH", "000858.SZ"]
 
-    def test_detect_peers_returns_none_when_akshare_fails(
+    def test_detect_peers_returns_none_when_industry_cons_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """If akshare raises, _detect_peers returns None and the
-        aggregator should emit an [error: ...] peers segment."""
+        """If akshare's industry-cons endpoint raises, _detect_peers
+        returns None and the aggregator should emit an [error: ...]
+        peers segment."""
         import akshare as ak
+        import pandas as pd
 
-        def _boom() -> None:
+        industries = pd.DataFrame([{"板块名称": "乳品"}])
+
+        monkeypatch.setattr(ak, "stock_board_industry_name_em", lambda: industries)
+
+        def _boom_cons(symbol: str) -> None:
             raise RuntimeError("network down")
 
-        monkeypatch.setattr(ak, "stock_board_industry_name_em", _boom)
+        monkeypatch.setattr(ak, "stock_board_industry_cons_em", _boom_cons)
 
         from stock_analysis_agent.tools import market_data as md
 
