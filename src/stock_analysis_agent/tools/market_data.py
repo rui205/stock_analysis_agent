@@ -336,3 +336,64 @@ async def _fetch_tushare(
             f"成交量: {d.get('vol')}  成交额: {d.get('amount')}",
         )
     return "[tushare]\n" + "\n".join(lines) + "\n"
+
+
+async def _fetch_akshare(code: str) -> str:
+    """Fetch an AKShare snapshot for `code`.
+
+    For HK codes (e.g. ``"02319"``) uses ``stock_hk_spot_em``.
+    For SH/SZ codes uses ``stock_zh_a_spot_em`` and filters by code.
+
+    The blocking SDK calls are wrapped in ``asyncio.to_thread`` so the
+    event loop is not stalled.
+
+    Args:
+        code: AKShare-local code, e.g. ``"02319"`` (HK) or
+            ``"sh600519"`` / ``"sz000001"`` (A-share).
+
+    Returns:
+        A text snippet prefixed with ``[akshare]``, or
+        ``[akshare]\n[error: ...]`` on failure or empty result.
+    """
+    import asyncio
+
+    import akshare as ak
+    import pandas as pd
+
+    def _fetch() -> pd.DataFrame:
+        # Heuristic: HK codes are 5-digit plain numbers;
+        # A-share codes come prefixed with sh/sz from _translate.
+        if code.isdigit() and len(code) == 5:
+            return ak.stock_hk_spot_em()
+        return ak.stock_zh_a_spot_em()
+
+    try:
+        df = await asyncio.to_thread(_fetch)
+    except Exception as e:
+        return f"[akshare]\n[error: {type(e).__name__}: {e}]\n"
+
+    if df is None or df.empty:
+        return f"[akshare]\n[error: empty result for {code}]\n"
+
+    # Find the row matching our code (strip sh/sz prefix if present).
+    needle = code.replace("sh", "").replace("sz", "")
+    match = df[df["代码"].astype(str).str.contains(needle, na=False)]
+    if match.empty:
+        return f"[akshare]\n[error: {needle} not found in spot data]\n"
+    row = match.iloc[0].to_dict()
+
+    def _g(key: str) -> str:
+        v = row.get(key, "--")
+        return "--" if v in (None, "", float("nan")) else str(v)
+
+    return (
+        "[akshare]\n"
+        f"名称: {_g('名称')}\n"
+        f"现价: {_g('最新价')}\n"
+        f"涨跌: {_g('涨跌额')} ({_g('涨跌幅')}%)\n"
+        f"今开: {_g('今开')}  昨收: {_g('昨收')}  "
+        f"最高: {_g('最高')}  最低: {_g('最低')}\n"
+        f"成交量: {_g('成交量')}  成交额: {_g('成交额')}\n"
+        f"PE: {_g('市盈率')}  PB: {_g('市净率')}\n"
+        f"总市值: {_g('总市值')}\n"
+    )

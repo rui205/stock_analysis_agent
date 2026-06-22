@@ -241,3 +241,64 @@ class TestFetchTushare:
         assert "最高: 15.940" in result
         assert "最低: 15.340" in result
         assert "蒙牛乳业" in result or "乳品" in result
+
+
+class TestFetchAkshare:
+    """_fetch_akshare(code) -> str using akshare."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_akshare_happy_path_with_mocked_ak(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Monkeypatch the specific akshare functions we use, assert
+        the output contains price and PE fields."""
+        import akshare as ak
+        import pandas as pd
+
+        fake_spot = pd.DataFrame(
+            [
+                {
+                    "代码": "02319",
+                    "名称": "蒙牛乳业",
+                    "最新价": 15.89,
+                    "涨跌额": 0.32,
+                    "涨跌幅": 2.06,
+                    "今开": 15.57,
+                    "昨收": 15.57,
+                    "最高": 15.94,
+                    "最低": 15.34,
+                    "成交量": 17684472,
+                    "成交额": 278092437.74,
+                    "市盈率": 11.03,
+                    "市净率": 1.68,
+                    "总市值": 387647651300,
+                }
+            ]
+        )
+
+        monkeypatch.setattr(
+            ak, "stock_hk_spot_em", lambda: fake_spot
+        )
+
+        from stock_analysis_agent.tools import market_data as md
+
+        result = await md._fetch_akshare("02319")
+        assert "[akshare]" in result
+        assert "15.89" in result or "蒙牛乳业" in result
+
+    @pytest.mark.asyncio
+    async def test_fetch_akshare_returns_error_segment_on_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import akshare as ak
+
+        def _boom() -> None:
+            raise RuntimeError("akshare down")
+
+        monkeypatch.setattr(ak, "stock_hk_spot_em", _boom)
+
+        from stock_analysis_agent.tools import market_data as md
+
+        result = await md._fetch_akshare("02319")
+        assert "[akshare]" in result
+        assert "[error:" in result
