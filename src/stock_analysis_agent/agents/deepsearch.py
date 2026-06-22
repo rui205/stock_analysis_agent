@@ -201,3 +201,102 @@ async def _web_search(query: str) -> str:
     sites = _SITE_LIST_PROVIDER.get()
     cache = _CACHE_PROVIDER.get()
     return await _fetch_and_concat(query, sites, cache=cache)
+
+
+from collections.abc import Sequence
+from typing import Any
+
+from stock_analysis_agent.agents.base import BaseAgent
+
+
+DEFAULT_SYSTEM_PROMPT: str = (
+    "You are a deep research agent. Given a user question, "
+    "use the web_search tool to gather information from the "
+    "configured sites, then synthesize a concise answer. "
+    "Cite the source site in parentheses when you use a fact."
+)
+
+DEFAULT_SITE_LIST: list[str] = [
+    "https://duckduckgo.com/html/",
+    "https://www.bing.com/search",
+    "https://html.duckduckgo.com/html/",
+]
+
+DEFAULT_CACHE_DIR: str = "~/.cache/stock-analysis-agent"
+DEFAULT_CACHE_TTL: float | None = 86400.0  # 24h in seconds
+
+# Sentinel used to detect "caller did not pass this argument" for `cache_ttl`,
+# since `None` is itself a valid value (disables expiration).
+_UNSET: object = object()
+
+
+class DeepSearchAgent(BaseAgent):
+    """LLM-driven deep-research agent that searches a configured site list.
+
+    Adds a single tool (`web_search`) that fans out to the configured
+    external sites, fetches each concurrently via httpx, caches results
+    to local JSON files, and returns aggregated plain text. The LLM
+    decides what to search and when to synthesize.
+
+    Construction overrides `BaseAgent`'s `max_retries` default from 2 → 3.
+    Other BaseAgent parameters (model, temperature, name, ...) flow
+    through via **kwargs.
+
+    Single-instance: constructing a second agent updates the module-level
+    _SITE_LIST_PROVIDER and _CACHE_PROVIDER used by the @tool _web_search.
+    """
+
+    def __init__(
+        self,
+        *,
+        site_list: Sequence[str] | None = None,
+        system_prompt: str | None = None,
+        max_retries: int = 3,
+        cache_dir: str | Path | None = None,
+        cache_ttl: float | None | object = _UNSET,
+        **kwargs: Any,
+    ) -> None:
+        resolved_sites = list(site_list) if site_list is not None else list(DEFAULT_SITE_LIST)
+        if not resolved_sites:
+            raise ValueError("site_list cannot be empty")
+
+        resolved_prompt = system_prompt if system_prompt is not None else DEFAULT_SYSTEM_PROMPT
+
+        resolved_dir = (
+            Path(cache_dir).expanduser().resolve()
+            if cache_dir is not None
+            else Path(DEFAULT_CACHE_DIR).expanduser().resolve()
+        )
+        # cache_ttl: explicit value (including None) takes precedence; only fall
+        # back to the default when the caller did not pass the parameter at all.
+        resolved_ttl = cache_ttl if cache_ttl is not _UNSET else DEFAULT_CACHE_TTL
+
+        self._cache = _FileCache(resolved_dir, ttl_seconds=resolved_ttl)
+
+        # Single-instance: write into module-level providers so the @tool
+        # callable (which is module-level) can read them.
+        _SITE_LIST_PROVIDER.value = resolved_sites
+        _CACHE_PROVIDER.value = self._cache
+
+        super().__init__(
+            system_prompt=resolved_prompt,
+            max_retries=max_retries,
+            tools=[_web_search],
+            **kwargs,
+        )
+
+    @property
+    def site_list(self) -> list[str]:
+        return list(self._site_list_snapshot())
+
+    def _site_list_snapshot(self) -> list[str]:
+        # Internal helper to read the current site_list without copying twice.
+        return _SITE_LIST_PROVIDER.get()
+
+    @property
+    def cache_dir(self) -> Path:
+        return self._cache._dir
+
+    @property
+    def cache_ttl(self) -> float | None:
+        return self._cache._ttl

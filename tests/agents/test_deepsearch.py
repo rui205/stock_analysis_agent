@@ -354,3 +354,106 @@ def test_web_search_tool_metadata() -> None:
     else:
         properties = schema
     assert "query" in (properties or {}), f"missing query in {schema!r}"
+
+
+def test_default_construction_uses_module_constants(tmp_path: Path) -> None:
+    """No-arg construction uses DEFAULT_SITE_LIST, DEFAULT_SYSTEM_PROMPT, max_retries=3."""
+    from stock_analysis_agent.agents.deepsearch import (
+        DEFAULT_CACHE_DIR,
+        DEFAULT_CACHE_TTL,
+        DEFAULT_SITE_LIST,
+        DEFAULT_SYSTEM_PROMPT,
+        DeepSearchAgent,
+    )
+
+    agent = DeepSearchAgent(cache_dir=tmp_path, cache_ttl=None)
+    assert agent.site_list == DEFAULT_SITE_LIST
+    assert agent.system_prompt_value == DEFAULT_SYSTEM_PROMPT
+    assert agent.max_retries == 3
+    assert agent.cache_dir == tmp_path.resolve()
+
+
+def test_custom_site_list_overrides_default(tmp_path: Path) -> None:
+    from stock_analysis_agent.agents.deepsearch import DeepSearchAgent
+
+    agent = DeepSearchAgent(
+        site_list=["https://x.test"], cache_dir=tmp_path, cache_ttl=None
+    )
+    assert agent.site_list == ["https://x.test"]
+
+
+def test_custom_system_prompt_overrides_default(tmp_path: Path) -> None:
+    from stock_analysis_agent.agents.deepsearch import DeepSearchAgent
+
+    agent = DeepSearchAgent(
+        system_prompt="custom prompt", cache_dir=tmp_path, cache_ttl=None
+    )
+    assert agent.system_prompt_value == "custom prompt"
+
+
+def test_site_list_returns_copy(tmp_path: Path) -> None:
+    """Mutating the returned site_list must not affect the agent or DEFAULT_SITE_LIST."""
+    from stock_analysis_agent.agents.deepsearch import (
+        DEFAULT_SITE_LIST,
+        DeepSearchAgent,
+    )
+
+    agent = DeepSearchAgent(cache_dir=tmp_path, cache_ttl=None)
+    snapshot = agent.site_list
+    snapshot.append("https://mutated.test")
+    assert "https://mutated.test" not in agent.site_list
+    assert "https://mutated.test" not in DEFAULT_SITE_LIST
+
+
+def test_empty_site_list_raises_at_construction(tmp_path: Path) -> None:
+    from stock_analysis_agent.agents.deepsearch import DeepSearchAgent
+
+    with pytest.raises(ValueError, match="site_list cannot be empty"):
+        DeepSearchAgent(site_list=[], cache_dir=tmp_path, cache_ttl=None)
+
+
+def test_kwargs_pass_through_to_base_agent(tmp_path: Path) -> None:
+    """model, temperature, name flow through to BaseAgent properties."""
+    from stock_analysis_agent.agents.deepsearch import DeepSearchAgent
+
+    agent = DeepSearchAgent(
+        model="claude-opus-4-8",
+        temperature=0.7,
+        name="custom",
+        cache_dir=tmp_path,
+        cache_ttl=None,
+    )
+    assert agent.model == "claude-opus-4-8"
+    assert agent.temperature == 0.7
+    assert agent.name == "custom"
+
+
+def test_cache_dir_expands_tilde(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`~` in a str cache_dir is expanded via Path.expanduser()."""
+    from stock_analysis_agent.agents.deepsearch import DeepSearchAgent
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    agent = DeepSearchAgent(cache_dir="~/my-cache", cache_ttl=None)
+    assert agent.cache_dir == (tmp_path / "my-cache").resolve()
+
+
+def test_cache_ttl_none_disables_expiration(tmp_path: Path) -> None:
+    """cache_ttl=None means cache entries never expire."""
+    from stock_analysis_agent.agents.deepsearch import DeepSearchAgent
+
+    agent = DeepSearchAgent(cache_dir=tmp_path, cache_ttl=None)
+    agent._cache.set(site="https://a.test", query="q", text="cached")
+    assert agent._cache.get(site="https://a.test", query="q") == "cached"
+    assert agent._cache._ttl is None
+
+
+def test_web_search_provider_reflects_latest_construction(tmp_path: Path) -> None:
+    """After constructing a DeepSearchAgent with site_list=[B], the
+    module-level site provider exposes [B] (single-instance contract)."""
+    from stock_analysis_agent.agents.deepsearch import (
+        DeepSearchAgent,
+        _SITE_LIST_PROVIDER,
+    )
+
+    DeepSearchAgent(site_list=["https://b.test"], cache_dir=tmp_path, cache_ttl=None)
+    assert _SITE_LIST_PROVIDER.get() == ["https://b.test"]
