@@ -7,8 +7,8 @@ from typing import Any
 import pytest
 from langchain_core.messages import ToolCall, ToolMessage
 
-from stock_analysis_agent.agents.base import _ToolRetryMiddleware
-from stock_analysis_agent.agents.exceptions import ToolExecutionError
+from stock_analysis_agent.agent.middleware import _ToolRetryMiddleware
+from stock_analysis_agent.agent.exceptions import ToolExecutionError
 
 
 def _make_request(call_id: str = "call_1") -> Any:

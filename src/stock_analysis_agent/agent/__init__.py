@@ -7,8 +7,8 @@ Public API:
 """
 from __future__ import annotations
 
-from stock_analysis_agent.agents.base import BaseAgent
-from stock_analysis_agent.agents.deepsearch import DeepSearchAgent
-from stock_analysis_agent.agents.exceptions import ToolExecutionError
+from stock_analysis_agent.agent.base import BaseAgent
+from stock_analysis_agent.agent.deepsearch import DeepSearchAgent
+from stock_analysis_agent.agent.exceptions import ToolExecutionError
 
 __all__ = ["BaseAgent", "DeepSearchAgent", "ToolExecutionError"]

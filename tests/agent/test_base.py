@@ -1,11 +1,11 @@
-"""Tests for stock_analysis_agent.agents.base.BaseAgent."""
+"""Tests for stock_analysis_agent.agent.base.BaseAgent."""
 from __future__ import annotations
 
 import pytest
 from langchain_core.messages import HumanMessage
 
-from stock_analysis_agent.agents.base import BaseAgent
-from stock_analysis_agent.agents.exceptions import ToolExecutionError
+from stock_analysis_agent.agent.base import BaseAgent
+from stock_analysis_agent.agent.exceptions import ToolExecutionError
 
 
 class _NoopAgent(BaseAgent):
@@ -54,7 +54,7 @@ def test_base_agent_name_defaults_to_class_name() -> None:
 def test_stream_returns_final_ai_message() -> None:
     """Spec test 2: BaseAgent.stream() must yield events whose on_chain_end
     payload contains an AIMessage with the model's reply content."""
-    from tests.agents.conftest import ToolAwareFakeChatModel, make_ai
+    from tests.agent.conftest import ToolAwareFakeChatModel, make_ai
     from langchain.agents import create_agent
     from langchain.agents.middleware import AgentMiddleware
 
@@ -94,7 +94,7 @@ def test_stream_emits_tool_events() -> None:
     must include `on_tool_start` and `on_tool_end`."""
     from langchain.tools import tool
 
-    from tests.agents.conftest import ToolAwareFakeChatModel, make_ai, make_tool_call
+    from tests.agent.conftest import ToolAwareFakeChatModel, make_ai, make_tool_call
 
     @tool
     def echo(value: str) -> str:
@@ -151,7 +151,7 @@ def test_stream_emits_tool_events() -> None:
 async def test_astream_returns_events() -> None:
     """astream() must be an async iterator yielding dict events with
     an 'event' key."""
-    from tests.agents.conftest import ToolAwareFakeChatModel, make_ai
+    from tests.agent.conftest import ToolAwareFakeChatModel, make_ai
 
     model = ToolAwareFakeChatModel(responses=[make_ai("ok")])
     agent = _NoopAgent(system_prompt="test", tools=[])
@@ -187,7 +187,7 @@ async def test_astream_returns_events() -> None:
 @pytest.mark.asyncio
 async def test_base_agent_astream_yields_events() -> None:
     """BaseAgent.astream() must yield dict events with an 'event' key."""
-    from tests.agents.conftest import ToolAwareFakeChatModel, make_ai
+    from tests.agent.conftest import ToolAwareFakeChatModel, make_ai
 
     from langchain.agents import create_agent
     from langchain.agents.middleware import AgentMiddleware
@@ -225,7 +225,7 @@ def test_tool_error_retries_then_raises_via_agent() -> None:
     from langchain.tools import tool
     from langchain_core.messages import ToolMessage
 
-    from tests.agents.conftest import ToolAwareFakeChatModel, make_ai, make_tool_call
+    from tests.agent.conftest import ToolAwareFakeChatModel, make_ai, make_tool_call
 
     call_count = {"n": 0}
 
@@ -251,7 +251,7 @@ def test_tool_error_retries_then_raises_via_agent() -> None:
 
     # Build the graph manually with the fake model so the test does not
     # depend on a live model call. The retry middleware is the real one.
-    from stock_analysis_agent.agents.base import _ToolRetryMiddleware
+    from stock_analysis_agent.agent.middleware import _ToolRetryMiddleware
 
     graph = create_agent(
         model=model,
@@ -272,7 +272,7 @@ def test_tool_error_retries_then_raises_via_agent() -> None:
 def test_messages_are_stateless() -> None:
     """Spec test 5: two consecutive `stream` calls with the same input
     must produce equivalent results without cross-contamination."""
-    from tests.agents.conftest import ToolAwareFakeChatModel, make_ai
+    from tests.agent.conftest import ToolAwareFakeChatModel, make_ai
 
     model = ToolAwareFakeChatModel(responses=[make_ai("reply-1"), make_ai("reply-2")])
 

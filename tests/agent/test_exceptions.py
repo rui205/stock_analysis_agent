@@ -1,9 +1,9 @@
-"""Tests for stock_analysis_agent.agents.exceptions."""
+"""Tests for stock_analysis_agent.agent.exceptions."""
 from __future__ import annotations
 
 import pytest
 
-from stock_analysis_agent.agents.exceptions import ToolExecutionError
+from stock_analysis_agent.agent.exceptions import ToolExecutionError
 
 
 def test_tool_execution_error_is_runtime_error() -> None:

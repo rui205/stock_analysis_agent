@@ -1,4 +1,4 @@
-"""Custom exception types for stock_analysis_agent.agents."""
+"""Custom exception types for stock_analysis_agent.agent."""
 from __future__ import annotations
 
 
