@@ -115,3 +115,44 @@ class TestFetchSina:
         )
         assert "[error:" in result
         assert "[sina]" in result
+
+
+class TestFetchTencent:
+    """_fetch_tencent(code) -> str using httpx against qt.gtimg.cn."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_tencent_parses_hk_quote(self) -> None:
+        """Mock the httpx response, assert _fetch_tencent returns a
+        snippet with the parsed price/PE fields."""
+        sample = (
+            'v_hk02319="100~蒙牛股份~02319~15.890~15.570~15.940~'
+            "17684472.0~0~0~15.890~0~0~0~0~0~0~0~0~0~15.890~0~0~0~0~0~0~0~0~0~"
+            "17684472.0~2026/06/22 16:08:17~0.320~2.06~15.940~15.340~15.890~"
+            '17684472.0~278092437.740~0~36.00~~0~0~3.85~615.9721~615.9721~'
+            'MENGNIU DAIRY~3.76~17.472~13.282~1.08~-96.57~0~0~0~0~0~36.00~'
+            '1.38~0.46~1000~11.03~-4.33~GP~3.81~1.68~3.91~-5.71~1.78~'
+            '3876476513.00~3876476513.00~36.00~0.598~15.725~10.03~HKD~1~50";'
+        )
+
+        def _h(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, text=sample)
+
+        result = await md._fetch_tencent(
+            "hk02319",
+            transport=httpx.MockTransport(_h),
+        )
+        assert "[tencent]" in result
+        assert "15.890" in result
+        assert "蒙牛股份" in result or "MENGNIU" in result
+
+    @pytest.mark.asyncio
+    async def test_fetch_tencent_returns_error_segment_on_http_failure(self) -> None:
+        def _h(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("boom")
+
+        result = await md._fetch_tencent(
+            "hk02319",
+            transport=httpx.MockTransport(_h),
+        )
+        assert "[error:" in result
+        assert "[tencent]" in result

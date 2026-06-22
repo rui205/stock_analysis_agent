@@ -183,3 +183,83 @@ def _parse_sina_csv(body: str) -> str:
         )
     except (ValueError, IndexError) as e:
         return f"[error: parse failed: {e}]"
+
+
+async def _fetch_tencent(
+    code: str,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+    timeout: float = 10.0,
+) -> str:
+    """Fetch a Tencent realtime quote for `code` and return formatted text.
+
+    Args:
+        code: Tencent-local code, e.g. ``"hk02319"``, ``"sh600519"``.
+        transport: Optional httpx transport (for tests).
+        timeout: HTTP timeout in seconds.
+
+    Returns:
+        A text snippet prefixed with ``[tencent]`` and parsed fields,
+        or ``[tencent]\n[error: ...]`` on failure.
+    """
+    url = "http://qt.gtimg.cn/q=" + code
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36"
+        ),
+    }
+    try:
+        client_kwargs: dict[str, Any] = {"timeout": timeout}
+        if transport is not None:
+            client_kwargs["transport"] = transport
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            body = resp.text
+    except Exception as e:
+        return f"[tencent]\n[error: {type(e).__name__}: {e}]\n"
+    return "[tencent]\n" + _parse_tencent_csv(body) + "\n"
+
+
+def _parse_tencent_csv(body: str) -> str:
+    """Parse a `v_<code>="~...";` payload into readable text.
+
+    Field layout (0-indexed after splitting on `~`) for HK shares:
+    1=name_cn, 3=current, 4=prev_close, 5=open, 32=change,
+    33=change_pct, 34=high, 35=low, 36=volume, 37=amount,
+    46=PB, 49=PE-TTM.
+    """
+    start = body.find('"')
+    end = body.rfind('"')
+    if start < 0 or end <= start:
+        return f"[error: unparseable tencent response: {body[:80]!r}]"
+    raw = body[start + 1 : end]
+    fields = raw.split("~")
+    if len(fields) < 50:
+        return f"[error: too few fields: {len(fields)}]"
+    try:
+        name_cn = fields[1]
+        current = float(fields[3])
+        prev_close = float(fields[4])
+        open_p = float(fields[5])
+        change = float(fields[32])
+        change_pct = float(fields[33])
+        high = float(fields[34])
+        low = float(fields[35])
+        volume = fields[36]
+        amount = fields[37]
+        pe_ttm = fields[49] if fields[49] else "--"
+        pb = fields[46] if len(fields) > 46 and fields[46] else "--"
+        return (
+            f"名称: {name_cn}\n"
+            f"现价: {current:.3f}\n"
+            f"涨跌: {change:+.3f} ({change_pct:+.2f}%)\n"
+            f"今开: {open_p:.3f}  昨收: {prev_close:.3f}  "
+            f"最高: {high:.3f}  最低: {low:.3f}\n"
+            f"成交量: {volume}\n"
+            f"成交额: {amount}\n"
+            f"PE-TTM: {pe_ttm}  PB: {pb}\n"
+        )
+    except (ValueError, IndexError) as e:
+        return f"[error: parse failed: {e}]"
