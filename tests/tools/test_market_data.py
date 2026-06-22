@@ -584,3 +584,53 @@ class TestFetchAndConcat:
         finally:
             md._fetch_sina = original_sina  # type: ignore[assignment]
             md._fetch_tencent = original_tencent  # type: ignore[assignment]
+
+
+class TestGetStockSnapshotTool:
+    """The @tool _get_stock_snapshot wrapper."""
+
+    def test_tool_name_is_get_stock_snapshot(self) -> None:
+        assert md._get_stock_snapshot.name == "get_stock_snapshot"
+
+    def test_tool_args_schema_has_symbol_and_sources(self) -> None:
+        """The @tool exposes symbol and sources fields in its JSON schema."""
+        schema = md._get_stock_snapshot.args
+        if hasattr(schema, "model_json_schema"):
+            schema = schema.model_json_schema()
+        if isinstance(schema, dict) and "properties" in schema:
+            properties = schema["properties"]
+        else:
+            properties = schema
+        assert "symbol" in properties
+        assert "sources" in properties
+
+    @pytest.mark.asyncio
+    async def test_tool_invokes_aggregator_and_returns_aggregated_text(
+        self, tmp_path
+    ) -> None:
+        """End-to-end: tool.ainvoke calls the aggregator and returns text."""
+        from stock_analysis_agent.memory import _FileCache
+
+        async def _fake_concat(symbol, **kwargs):  # type: ignore[no-untyped-def]
+            return (
+                f"[sina]\n{symbol}-sina\n"
+                f"[tencent]\n{symbol}-tencent\n"
+            )
+
+        original = md._fetch_and_concat
+        md._fetch_and_concat = _fake_concat  # type: ignore[assignment]
+        cache = _FileCache(tmp_path, ttl_seconds=60.0)
+        md._CACHE_PROVIDER.value = cache
+        md._SOURCES_PROVIDER.value = md.ALL_SOURCES
+        try:
+            result = await md._get_stock_snapshot.ainvoke(
+                {"symbol": "02319.HK", "sources": ["sina", "tencent"]}
+            )
+        finally:
+            md._fetch_and_concat = original  # type: ignore[assignment]
+            md._CACHE_PROVIDER.value = None
+            md._SOURCES_PROVIDER.value = None
+
+        assert "[sina]" in result
+        assert "[tencent]" in result
+        assert "02319.HK-sina" in result

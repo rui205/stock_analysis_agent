@@ -7,6 +7,7 @@ from typing import Any, Literal
 import httpx
 
 from stock_analysis_agent.memory.file_cache import _FileCache
+from stock_analysis_agent.tools.web_search import _Provider
 
 MarketName = Literal["HK", "SH", "SZ"]
 SourceName = Literal["sina", "tencent", "tushare", "akshare", "mootdx"]
@@ -38,6 +39,9 @@ DEFAULT_CACHE_DIR: str = "~/.cache/stock-analysis-agent/market"
 DEFAULT_CACHE_TTL: float = 12 * 3600.0
 PEER_INDUSTRY_SOURCE: SourceName = "akshare"
 PEER_FETCH_SOURCES: tuple[SourceName, ...] = ("sina", "tencent")
+
+_SOURCES_PROVIDER: _Provider[tuple[SourceName, ...]] = _Provider()
+_CACHE_PROVIDER: _Provider[_FileCache | None] = _Provider()
 
 
 def _translate(symbol: str) -> dict[SourceName, str]:
@@ -703,3 +707,49 @@ async def _fetch_and_concat(
             pass  # cache write failure does not fail the search
 
     return result
+
+
+from langchain.tools import tool  # noqa: E402
+
+
+@tool("get_stock_snapshot")
+async def _get_stock_snapshot(
+    symbol: str,
+    sources: list[str] | None = None,
+    include_peers: bool = True,
+    peer_count: int = 2,
+) -> str:
+    """Fetch a comprehensive stock snapshot from multiple Chinese-market
+    data sources and return aggregated text.
+
+    Args:
+        symbol: Standard code in '<code>.<market>' format, e.g.
+            '02319.HK', '600519.SH', '000001.SZ'.
+        sources: Optional subset of data sources to query. Allowed
+            values: 'sina', 'tencent', 'tushare', 'akshare', 'mootdx'.
+            None or empty list means query ALL sources configured via
+            the module-level _SOURCES_PROVIDER (typically all five).
+        include_peers: If True, also look up the stock's industry and
+            fetch the top `peer_count` peer companies for comparison.
+        peer_count: How many top peers (by market cap) to include.
+            Only meaningful when include_peers=True. Range: 0..10.
+
+    Returns:
+        Plain-text aggregation of snippets from each source, each
+        prefixed with `[source-name]`. Failed sources are recorded as
+        `[error: ...]` segments. The `[peers]` section appears at the
+        end when include_peers=True and peer lookup succeeded.
+    """
+    resolved_sources: tuple[SourceName, ...]
+    if not sources:
+        resolved_sources = _SOURCES_PROVIDER.get()
+    else:
+        resolved_sources = tuple(sources)  # type: ignore[arg-type]
+    cache = _CACHE_PROVIDER.get()
+    return await _fetch_and_concat(
+        symbol,
+        sources=resolved_sources,
+        include_peers=include_peers,
+        peer_count=peer_count,
+        cache=cache,
+    )
