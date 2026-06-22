@@ -192,6 +192,8 @@ _SITE_LIST_PROVIDER: _Provider[list[str]] = _Provider()
 _CACHE_PROVIDER: _Provider[_FileCache | None] = _Provider()
 
 
+# The explicit name drops the leading underscore so the LLM sees the
+# tool as "web_search", not "_web_search".
 @tool("web_search")
 async def _web_search(query: str) -> str:
     """Search the configured site list for `query` and return aggregated text.

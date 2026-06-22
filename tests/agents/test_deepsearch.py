@@ -120,13 +120,6 @@ def test_cache_key_is_query_site_specific(tmp_path: Path) -> None:
     assert cache.get(site="https://b.test", query="hello") == "C"
 
 
-def _make_mock_transport(
-    handler,
-) -> httpx.MockTransport:
-    """Build an httpx.MockTransport from a synchronous handler."""
-    return httpx.MockTransport(handler)
-
-
 def _ok_handler(html: str = "<p>hello</p>"):
     def _h(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text=html)
@@ -448,7 +441,7 @@ def test_cache_ttl_none_disables_expiration(tmp_path: Path) -> None:
     agent = DeepSearchAgent(cache_dir=tmp_path, cache_ttl=None)
     agent._cache.set(site="https://a.test", query="q", text="cached")
     assert agent._cache.get(site="https://a.test", query="q") == "cached"
-    assert agent._cache._ttl is None
+    assert agent.cache_ttl is None  # use public property
 
 
 def test_web_search_provider_reflects_latest_construction(tmp_path: Path) -> None:
