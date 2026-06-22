@@ -304,3 +304,76 @@ class TestFetchAkshare:
         result = await md._fetch_akshare("02319")
         assert "[akshare]" in result
         assert "[error:" in result
+
+
+class TestFetchMootdx:
+    """_fetch_mootdx(market, symbol) -> str using mootdx 0.11.7 API."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_mootdx_returns_error_segment_on_connection_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If mootdx.quotes.StdQuotes raises on connect, _fetch_mootdx
+        returns an [error: ...] segment instead of propagating."""
+        from mootdx.quotes import StdQuotes
+
+        def _boom(*args, **kwargs):  # type: ignore[no-untyped-def]
+            raise ConnectionError("tdx server unreachable")
+
+        monkeypatch.setattr(StdQuotes, "__init__", _boom)
+
+        from stock_analysis_agent.tools import market_data as md
+
+        result = await md._fetch_mootdx("0", "000001")
+        assert "[mootdx]" in result
+        assert "[error:" in result
+
+    @pytest.mark.asyncio
+    async def test_fetch_mootdx_happy_path_with_mocked_dataframe(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the client returns a non-empty DataFrame, _fetch_mootdx
+        renders open/high/low/close/volume fields."""
+        import pandas as pd
+        from mootdx.quotes import StdQuotes
+
+        fake_df = pd.DataFrame(
+            [
+                {
+                    "open": 15.57,
+                    "high": 15.94,
+                    "low": 15.34,
+                    "close": 15.89,
+                    "volume": 17684472.0,
+                }
+            ]
+        )
+
+        monkeypatch.setattr(StdQuotes, "__init__", lambda *a, **kw: None)
+        monkeypatch.setattr(StdQuotes, "bars", lambda self, **kw: fake_df)
+
+        from stock_analysis_agent.tools import market_data as md
+
+        result = await md._fetch_mootdx("0", "000001")
+        assert "[mootdx]" in result
+        assert "15.890" in result  # strict .3f format
+
+    @pytest.mark.asyncio
+    async def test_fetch_mootdx_empty_dataframe_returns_error_segment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """mootdx returns empty DataFrame for HK symbols (mootdx is
+        A-share focused). Adapter must report this gracefully, not raise."""
+        import pandas as pd
+        from mootdx.quotes import StdQuotes
+
+        empty_df = pd.DataFrame()
+
+        monkeypatch.setattr(StdQuotes, "__init__", lambda *a, **kw: None)
+        monkeypatch.setattr(StdQuotes, "bars", lambda self, **kw: empty_df)
+
+        from stock_analysis_agent.tools import market_data as md
+
+        result = await md._fetch_mootdx("23", "023190")
+        assert "[mootdx]" in result
+        assert "[error:" in result

@@ -406,3 +406,68 @@ async def _fetch_akshare(code: str) -> str:
         f"PE: {_g('市盈率')}  PB: {_g('市净率')}\n"
         f"总市值: {_g('总市值')}\n"
     )
+
+
+async def _fetch_mootdx(market: str, symbol: str) -> str:
+    """Fetch a Mootdx snapshot (latest daily bar) for `symbol`.
+
+    Uses ``mootdx.quotes.StdQuotes`` (mootdx 0.11.7 API) with the
+    daily-frequency ``bars()`` method. mootdx is primarily an A-share
+    data source; HK symbols return an empty DataFrame which is
+    surfaced as an ``[error: ...]`` segment rather than an exception.
+
+    The blocking SDK calls are wrapped in ``asyncio.to_thread`` so the
+    event loop is not stalled.
+
+    Args:
+        market: Mootdx market code (``"23"`` for HK, ``"1"`` for SH,
+            ``"0"`` for SZ — see ``_translate``).
+        symbol: 6-digit mootdx symbol, e.g. ``"000001"``, ``"600519"``,
+            ``"023190"``.
+
+    Returns:
+        A text snippet prefixed with ``[mootdx]``, or
+        ``[mootdx]\n[error: ...]`` on connection failure, empty
+        DataFrame, or any other exception.
+    """
+    import asyncio
+
+    import pandas as pd
+    from mootdx.quotes import StdQuotes
+
+    def _fetch() -> pd.DataFrame:
+        client = StdQuotes(
+            server=MOOTDX_DEFAULT_SERVER, timeout=10
+        )
+        try:
+            return client.bars(
+                symbol=symbol, frequency=9, start=0, offset=1
+            )
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+    try:
+        df = await asyncio.to_thread(_fetch)
+    except Exception as e:
+        return f"[mootdx]\n[error: {type(e).__name__}: {e}]\n"
+
+    if df is None or df.empty:
+        return (
+            f"[mootdx]\n[error: empty bars for market={market} "
+            f"symbol={symbol} (mootdx 0.11.x is A-share focused; "
+            f"HK symbols may return empty)]\n"
+        )
+
+    row = df.iloc[0].to_dict()
+    return (
+        "[mootdx]\n"
+        f"市场代码: {market}\n"
+        f"今开: {float(row.get('open', 0)):.3f}  "
+        f"最高: {float(row.get('high', 0)):.3f}  "
+        f"最低: {float(row.get('low', 0)):.3f}  "
+        f"收盘: {float(row.get('close', 0)):.3f}\n"
+        f"成交量: {row.get('volume')}\n"
+    )
