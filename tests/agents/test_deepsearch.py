@@ -6,9 +6,12 @@ from pathlib import Path
 
 import httpx
 import pytest
+from langchain_core.messages import HumanMessage
 
 from stock_analysis_agent.agents.deepsearch import _FileCache, _extract_text
 from stock_analysis_agent.agents.exceptions import ToolExecutionError
+
+from tests.agents.conftest import ToolAwareFakeChatModel, make_ai, make_tool_call
 
 
 def test_extract_text_strips_script_and_style() -> None:
@@ -457,3 +460,99 @@ def test_web_search_provider_reflects_latest_construction(tmp_path: Path) -> Non
 
     DeepSearchAgent(site_list=["https://b.test"], cache_dir=tmp_path, cache_ttl=None)
     assert _SITE_LIST_PROVIDER.get() == ["https://b.test"]
+
+def _noop_middleware():  # type: ignore[no-untyped-def]
+    """Build a no-op AgentMiddleware to skip BaseAgent's retry middleware."""
+    from langchain.agents.middleware import AgentMiddleware
+
+    class _NoRetry(AgentMiddleware):
+        def wrap_tool_call(self, request, handler):  # type: ignore[no-untyped-def]
+            return handler(request)
+
+        async def awrap_tool_call(self, request, handler):  # type: ignore[no-untyped-def]
+            return await handler(request)
+
+    return _NoRetry()
+
+
+def test_tool_call_reaches_web_search_with_configured_sites(
+    tmp_path: Path,
+) -> None:
+    """When the LLM produces a web_search tool_call, the configured sites
+    are actually fetched (verified via MockTransport request log)."""
+    from langchain.agents import create_agent
+
+    from stock_analysis_agent.agents.deepsearch import DeepSearchAgent, _web_search
+
+    seen_urls: list[str] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen_urls.append(str(request.url))
+        return httpx.Response(200, text="<p>snippet</p>")
+
+    transport = httpx.MockTransport(_handler)
+
+    # Build the agent first so providers are populated.
+    agent = DeepSearchAgent(
+        site_list=["https://a.test", "https://b.test"],
+        cache_dir=tmp_path,
+        cache_ttl=None,
+    )
+
+    # Monkey-patch _fetch_and_concat to inject the MockTransport. This
+    # is the smallest surgical way to avoid real HTTP without touching
+    # the production API surface.
+    import stock_analysis_agent.agents.deepsearch as ds_mod
+
+    original = ds_mod._fetch_and_concat
+
+    async def _patched(query, sites, **kwargs):  # type: ignore[no-untyped-def]
+        kwargs["transport"] = transport
+        return await original(query, sites, **kwargs)
+
+    ds_mod._fetch_and_concat = _patched
+    try:
+        # Fake model: tool_call, then final answer.
+        first = make_ai("")
+        first.tool_calls = [make_tool_call("web_search", {"query": "AI safety"}, "call_1")]
+        model = ToolAwareFakeChatModel(responses=[first, make_ai("answer")])
+
+        graph = create_agent(
+            model=model,
+            tools=[_web_search],
+            system_prompt=agent.system_prompt_value,
+            middleware=[_noop_middleware()],
+        )
+        agent._build_graph = lambda: graph  # type: ignore[method-assign]
+
+        # Drain the stream; we don't care about events, just that the
+        # tool ran and we got a final answer.
+        for _ in agent.stream([HumanMessage(content="research AI safety")]):
+            pass
+    finally:
+        ds_mod._fetch_and_concat = original
+
+    # Both configured sites were hit (with q=AI safety).
+    assert len(seen_urls) == 2, f"expected 2 sites, got {seen_urls!r}"
+    assert all("q=AI+safety" in u or "q=AI%20safety" in u or "q=AI safety" in u for u in seen_urls), (
+        f"query not threaded into URL: {seen_urls!r}"
+    )
+
+
+def test_second_agent_overwrites_first_sites(tmp_path: Path) -> None:
+    """Single-instance contract: constructing a second DeepSearchAgent
+    overwrites the module-level provider."""
+    from stock_analysis_agent.agents.deepsearch import (
+        DeepSearchAgent,
+        _SITE_LIST_PROVIDER,
+    )
+
+    DeepSearchAgent(
+        site_list=["https://first.test"], cache_dir=tmp_path, cache_ttl=None
+    )
+    assert _SITE_LIST_PROVIDER.get() == ["https://first.test"]
+
+    DeepSearchAgent(
+        site_list=["https://second.test"], cache_dir=tmp_path, cache_ttl=None
+    )
+    assert _SITE_LIST_PROVIDER.get() == ["https://second.test"]
