@@ -938,60 +938,83 @@ Append this block to `tests/tools/test_market_data.py`:
 
 ```python
 class TestFetchMootdx:
-    """_fetch_mootdx(code) -> str using mootdx."""
+    """_fetch_mootdx(code, symbol) -> str using mootdx 0.11.7 API."""
 
     def test_fetch_mootdx_returns_error_segment_on_connection_failure(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """If the mootdx client raises on connect, _fetch_mootdx returns
-        an [error: ...] segment instead of propagating."""
-        import mootdx
+        """If mootdx.quotes.StdQuotes raises on connect, _fetch_mootdx
+        returns an [error: ...] segment instead of propagating."""
+        from mootdx.quotes import StdQuotes
 
-        class _FakeClient:
-            def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
-                raise ConnectionError("tdx server unreachable")
+        def _boom(*args, **kwargs):  # type: ignore[no-untyped-def]
+            raise ConnectionError("tdx server unreachable")
 
-        monkeypatch.setattr(mootdx, "quote", _FakeClient)
+        monkeypatch.setattr(StdQuotes, "__init__", _boom)
 
         from stock_analysis_agent.tools import market_data as md
 
-        result = md._fetch_mootdx("23")
+        result = await md._fetch_mootdx("0", "000001")
         assert "[mootdx]" in result
         assert "[error:" in result
 
-    def test_fetch_mootdx_happy_path_with_mocked_client(
+    def test_fetch_mootdx_happy_path_with_mocked_dataframe(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When the client returns fake security bars, _fetch_mootdx
-        should render them."""
-        import mootdx
+        """When the client returns a non-empty DataFrame, _fetch_mootdx
+        renders open/high/low/close/volume fields."""
+        import pandas as pd
+        from mootdx.quotes import StdQuotes
+
+        fake_df = pd.DataFrame(
+            [
+                {
+                    "open": 15.57,
+                    "high": 15.94,
+                    "low": 15.34,
+                    "close": 15.89,
+                    "volume": 17684472.0,
+                }
+            ]
+        )
 
         class _FakeClient:
             def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
                 pass
 
-            def security_bars(
-                self, *args, **kwargs  # type: ignore[no-untyped-def]
-            ):
-                return {
-                    "price": [
-                        {
-                            "open": 15.57,
-                            "high": 15.94,
-                            "low": 15.34,
-                            "close": 15.89,
-                            "vol": 17684472,
-                        }
-                    ]
-                }
+            def bars(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+                return fake_df
 
-        monkeypatch.setattr(mootdx, "quote", _FakeClient)
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr(StdQuotes, "__init__", lambda *a, **kw: None)
+        monkeypatch.setattr(StdQuotes, "bars", lambda self, **kw: fake_df)
 
         from stock_analysis_agent.tools import market_data as md
 
-        result = md._fetch_mootdx("23")
+        result = await md._fetch_mootdx("0", "000001")
         assert "[mootdx]" in result
         assert "15.89" in result
+
+    def test_fetch_mootdx_empty_dataframe_returns_error_segment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """mootdx returns empty DataFrame for HK symbols (mootdx is
+        A-share focused). Adapter must report this gracefully, not raise."""
+        import pandas as pd
+        from mootdx.quotes import StdQuotes
+
+        empty_df = pd.DataFrame()
+
+        monkeypatch.setattr(StdQuotes, "__init__", lambda *a, **kw: None)
+        monkeypatch.setattr(StdQuotes, "bars", lambda self, **kw: empty_df)
+
+        from stock_analysis_agent.tools import market_data as md
+
+        result = await md._fetch_mootdx("23", "023190")
+        assert "[mootdx]" in result
+        assert "[error:" in result
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1011,32 +1034,36 @@ Expected: `AttributeError: ... has no attribute '_fetch_mootdx'`
 Add this function after `_fetch_akshare`:
 
 ```python
-async def _fetch_mootdx(code: str) -> str:
-    """Fetch a Mootdx snapshot (latest bar) for `code`.
+async def _fetch_mootdx(market: str, symbol: str) -> str:
+    """Fetch a Mootdx snapshot (latest daily bar) for `symbol`.
+
+    Uses ``mootdx.quotes.StdQuotes`` (mootdx 0.11.7 API) with the
+    daily-frequency `bars()` method. mootdx is primarily an A-share
+    data source; HK symbols return an empty DataFrame which is
+    surfaced as an ``[error: ...]`` segment rather than an exception.
 
     Args:
-        code: Mootdx market code (``"23"`` for HK, ``"1"`` for SH,
+        market: Mootdx market code (``"23"`` for HK, ``"1"`` for SH,
             ``"0"`` for SZ — see `_translate`).
+        symbol: 6-digit mootdx symbol, e.g. ``"000001"``, ``"600519"``,
+            ``"023190"``.
 
     Returns:
         A text snippet prefixed with ``[mootdx]``, or
-        ``[mootdx]\n[error: ...]`` on connection or parse failure.
+        ``[mootdx]\n[error: ...]`` on connection failure, empty
+        DataFrame, or any other exception.
     """
     import asyncio
 
-    import mootdx
+    from mootdx.quotes import StdQuotes
 
-    def _fetch() -> dict:
-        client = mootdx.quote.Client(
-            tdx_server=MOOTDX_DEFAULT_SERVER, timeout=10
+    def _fetch() -> "pd.DataFrame":  # type: ignore[name-defined]
+        client = StdQuotes(
+            server=MOOTDX_DEFAULT_SERVER, timeout=10
         )
         try:
-            return client.security_bars(
-                category=0,  # 5-minute K-line
-                market=int(code),
-                code="",
-                start=0,
-                offset=1,
+            return client.bars(
+                symbol=symbol, frequency=9, start=0, offset=1
             )
         finally:
             try:
@@ -1045,21 +1072,60 @@ async def _fetch_mootdx(code: str) -> str:
                 pass
 
     try:
-        data = await asyncio.to_thread(_fetch)
+        df = await asyncio.to_thread(_fetch)
     except Exception as e:
         return f"[mootdx]\n[error: {type(e).__name__}: {e}]\n"
 
-    prices = (data or {}).get("price") or []
-    if not prices:
-        return f"[mootdx]\n[error: empty security_bars for market {code}]\n"
-    bar = prices[0]
+    if df is None or df.empty:
+        return (
+            f"[mootdx]\n[error: empty bars for market={market} "
+            f"symbol={symbol} (mootdx 0.11.x is A-share focused; "
+            f"HK symbols may return empty)]\n"
+        )
+
+    row = df.iloc[0].to_dict()
     return (
         "[mootdx]\n"
-        f"市场代码: {code}\n"
-        f"今开: {bar.get('open')}  最高: {bar.get('high')}  "
-        f"最低: {bar.get('low')}  收盘: {bar.get('close')}\n"
-        f"成交量: {bar.get('vol')}\n"
+        f"市场代码: {market}\n"
+        f"今开: {row.get('open')}  最高: {row.get('high')}  "
+        f"最低: {row.get('low')}  收盘: {row.get('close')}\n"
+        f"成交量: {row.get('volume')}\n"
     )
+```
+
+- [ ] **Step 2: Update `_translate` to also emit the 6-digit mootdx symbol**
+
+After the existing `_translate` function in `market_data.py`, modify its return shape so each entry also includes `"mootdx_symbol"`. Update all three market branches to return:
+
+- HK: `"mootdx_symbol": code.ljust(6, "0")[:6]` (e.g. `"02319"` → `"023190"`)
+- SH: `"mootdx_symbol": code.zfill(6)` (e.g. `"600519"` → `"600519"`)
+- SZ: `"mootdx_symbol": code.zfill(6)` (e.g. `"000001"` → `"000001"`)
+
+This means `_translate` now returns `dict[str, str]` with 6 keys (5 sources + `mootdx_symbol`). Update `TestTranslate` in `tests/tools/test_market_data.py` accordingly: each test's expected dict gains a `"mootdx_symbol"` key.
+
+- [ ] **Step 3: Update the aggregator (Task 17) and aggregator tests (Task 16) to pass `mootdx_symbol` to `_fetch_mootdx`**
+
+The aggregator's `_call` for `"mootdx"` must be:
+
+```python
+elif src == "mootdx":
+    text = await _fetch_mootdx(
+        translated["mootdx"], translated["mootdx_symbol"]
+    )
+```
+
+(Task 17's `_fetch_and_concat` is implemented in the next phase; defer this change to that step.)
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `pytest tests/tools/test_market_data.py::TestFetchMootdx -v`
+Expected: 3 passed (connection failure, happy path with DataFrame, empty DataFrame).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/stock_analysis_agent/tools/market_data.py tests/tools/test_market_data.py
+git commit -m "feat(market-data): add mootdx adapter (0.11.x StdQuotes API)"
 ```
 
 - [ ] **Step 2: Run tests to verify they pass**
