@@ -7,16 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import httpx
 import json
 import time
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from stock_analysis_agent.agents.exceptions import ToolExecutionError
-
-if TYPE_CHECKING:
-    import httpx
 
 
 class _TextExtractor(HTMLParser):
@@ -112,7 +110,7 @@ async def _fetch_and_concat(
     site_list: list[str],
     *,
     cache: _FileCache | None = None,
-    transport: "httpx.AsyncBaseTransport | None" = None,
+    transport: httpx.AsyncBaseTransport | None = None,
     timeout: float = 10.0,
 ) -> str:
     """Fetch `query` from each site in `site_list` concurrently and concatenate results.
@@ -137,12 +135,10 @@ async def _fetch_and_concat(
                 return (site, hit)
         # 2) HTTP fetch.
         try:
-            import httpx as _httpx
-
             client_kwargs: dict[str, Any] = {"timeout": timeout}
             if transport is not None:
                 client_kwargs["transport"] = transport
-            async with _httpx.AsyncClient(**client_kwargs) as client:
+            async with httpx.AsyncClient(**client_kwargs) as client:
                 resp = await client.get(site, params={"q": query})
                 resp.raise_for_status()
                 text = _extract_text(resp.text)
