@@ -226,9 +226,9 @@ def _parse_tencent_csv(body: str) -> str:
     """Parse a `v_<code>="~...";` payload into readable text.
 
     Field layout (0-indexed after splitting on `~`) for HK shares:
-    1=name_cn, 3=current, 4=prev_close, 5=open, 32=change,
-    33=change_pct, 34=high, 35=low, 36=volume, 37=amount,
-    46=PB, 49=PE-TTM.
+    1=name_cn, 3=current, 4=prev_close, 5=open, 31=change,
+    32=change_pct, 33=high, 34=low, 36=volume, 37=amount,
+    48=PE-TTM, 49=PB.
     """
     start = body.find('"')
     end = body.rfind('"')
@@ -243,14 +243,14 @@ def _parse_tencent_csv(body: str) -> str:
         current = float(fields[3])
         prev_close = float(fields[4])
         open_p = float(fields[5])
-        change = float(fields[32])
-        change_pct = float(fields[33])
-        high = float(fields[34])
-        low = float(fields[35])
+        change = float(fields[31])
+        change_pct = float(fields[32])
+        high = float(fields[33])
+        low = float(fields[34])
         volume = fields[36]
         amount = fields[37]
-        pe_ttm = fields[49] if fields[49] else "--"
-        pb = fields[46] if len(fields) > 46 and fields[46] else "--"
+        pe_ttm = fields[48] or "--"
+        pb = fields[49] or "--"
         return (
             f"名称: {name_cn}\n"
             f"现价: {current:.3f}\n"

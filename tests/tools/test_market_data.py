@@ -142,8 +142,19 @@ class TestFetchTencent:
             transport=httpx.MockTransport(_h),
         )
         assert "[tencent]" in result
-        assert "15.890" in result
-        assert "蒙牛股份" in result or "MENGNIU" in result
+        # Strict assertions: change/change_pct/high/low/PE-TTM/PB must
+        # render with their verified values, not the off-by-one
+        # neighbors from fields[32..35,46,49].
+        assert "涨跌: +0.320 (+2.06%)" in result
+        assert "最高: 15.940" in result
+        assert "最低: 15.340" in result
+        assert "PE-TTM: 17.472" in result
+        assert "PB: 13.282" in result
+        # fields[1] is the CN name and must be present.
+        assert "蒙牛股份" in result
+        # fields[46] is the English name and must NOT leak into the
+        # output (the buggy parser was rendering it as PB).
+        assert "MENGNIU DAIRY" not in result
 
     @pytest.mark.asyncio
     async def test_fetch_tencent_returns_error_segment_on_http_failure(self) -> None:
