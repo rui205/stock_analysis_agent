@@ -5,11 +5,18 @@ list of external search endpoints (httpx + stdlib HTML parser + file cache).
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from stock_analysis_agent.agents.exceptions import ToolExecutionError
+
+if TYPE_CHECKING:
+    import httpx
 
 
 class _TextExtractor(HTMLParser):
@@ -98,3 +105,60 @@ class _FileCache:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(payload, encoding="utf-8")
         tmp.replace(path)
+
+
+async def _fetch_and_concat(
+    query: str,
+    site_list: list[str],
+    *,
+    cache: _FileCache | None = None,
+    transport: "httpx.AsyncBaseTransport | None" = None,
+    timeout: float = 10.0,
+) -> str:
+    """Fetch `query` from each site in `site_list` concurrently and concatenate results.
+
+    Each site is fetched via httpx.AsyncClient with optional `transport`
+    (for tests). Cache behavior:
+      - If `cache` is None, every site is fetched over HTTP.
+      - If `cache` is set, hit returns the cached text without HTTP;
+        miss fetches and writes through to the cache.
+    Per-site failures are recorded as `[error: ...]` segments rather
+    than raised. If every site fails, the function raises
+    `ToolExecutionError` so the BaseAgent retry middleware can act.
+    """
+    if not site_list:
+        raise ValueError("site_list cannot be empty")
+
+    async def _one(site: str) -> tuple[str, str]:
+        # 1) Try cache first.
+        if cache is not None:
+            hit = cache.get(site=site, query=query)
+            if hit is not None:
+                return (site, hit)
+        # 2) HTTP fetch.
+        try:
+            import httpx as _httpx
+
+            client_kwargs: dict[str, Any] = {"timeout": timeout}
+            if transport is not None:
+                client_kwargs["transport"] = transport
+            async with _httpx.AsyncClient(**client_kwargs) as client:
+                resp = await client.get(site, params={"q": query})
+                resp.raise_for_status()
+                text = _extract_text(resp.text)
+        except Exception as e:
+            return (site, f"[error: {type(e).__name__}: {e}]")
+        # 3) Write-through cache (best-effort).
+        if cache is not None:
+            try:
+                cache.set(site=site, query=query, text=text)
+            except OSError:
+                pass  # cache write failure does not fail the search
+        return (site, text)
+
+    results = await asyncio.gather(*(_one(s) for s in site_list))
+    if all(text.startswith("[error:") for _, text in results):
+        raise ToolExecutionError(f"all sites failed: {[s for s, _ in results]}")
+
+    parts = [f"[{site}]\n{text}\n" for site, text in results]
+    return "\n".join(parts)
