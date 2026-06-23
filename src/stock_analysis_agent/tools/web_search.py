@@ -12,6 +12,16 @@ from stock_analysis_agent.memory.file_cache import _FileCache
 from stock_analysis_agent.tools.text_extractor import _extract_text
 
 
+# Bing and DuckDuckGo HTML reject the default httpx user-agent
+# (``python-httpx/...``) and return 302 / CAPTCHA. Sending a current
+# Chrome UA lets the requests through on most networks.
+_DEFAULT_USER_AGENT: str = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+
+
 async def _fetch_and_concat(
     query: str,
     site_list: list[str],
@@ -19,6 +29,7 @@ async def _fetch_and_concat(
     cache: _FileCache | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
     timeout: float = 10.0,
+    user_agent: str = _DEFAULT_USER_AGENT,
 ) -> str:
     """Fetch `query` from each site in `site_list` concurrently and concatenate results.
 
@@ -42,7 +53,10 @@ async def _fetch_and_concat(
                 return (site, hit)
         # 2) HTTP fetch.
         try:
-            client_kwargs: dict[str, Any] = {"timeout": timeout}
+            client_kwargs: dict[str, Any] = {
+                "timeout": timeout,
+                "headers": {"User-Agent": user_agent},
+            }
             if transport is not None:
                 client_kwargs["transport"] = transport
             async with httpx.AsyncClient(**client_kwargs) as client:

@@ -11,7 +11,11 @@ import pytest
 
 from stock_analysis_agent.agent.exceptions import ToolExecutionError
 from stock_analysis_agent.memory import _FileCache
-from stock_analysis_agent.tools.web_search import _fetch_and_concat, _web_search
+from stock_analysis_agent.tools.web_search import (
+    _DEFAULT_USER_AGENT,
+    _fetch_and_concat,
+    _web_search,
+)
 
 
 def _ok_handler(html: str = "<p>hello</p>"):
@@ -226,3 +230,50 @@ def test_web_search_tool_metadata() -> None:
     else:
         properties = schema
     assert "query" in (properties or {}), f"missing query in {schema!r}"
+
+
+@pytest.mark.asyncio
+async def test_fetch_sends_default_chrome_user_agent_header() -> None:
+    """By default, requests must carry a Chrome-like UA (not python-httpx/...).
+
+    Bing and DuckDuckGo HTML reject the default httpx user-agent with 302
+    / CAPTCHA, so the tool injects a current Chrome UA. This guards
+    against accidental regression.
+    """
+    seen_uas: list[str] = []
+
+    def _h(request: httpx.Request) -> httpx.Response:
+        seen_uas.append(request.headers.get("User-Agent", ""))
+        return httpx.Response(200, text="<p>ok</p>")
+
+    transport = httpx.MockTransport(_h)
+    await _fetch_and_concat(
+        "q", ["https://a.test"], cache=None, transport=transport
+    )
+
+    assert seen_uas == [_DEFAULT_USER_AGENT], (
+        f"expected Chrome UA, got {seen_uas!r}"
+    )
+    assert "python-httpx" not in _DEFAULT_USER_AGENT
+
+
+@pytest.mark.asyncio
+async def test_fetch_accepts_custom_user_agent_override() -> None:
+    """Callers can override the UA via the ``user_agent`` parameter."""
+    seen_uas: list[str] = []
+    custom_ua = "Mozilla/5.0 (test-bot/1.0)"
+
+    def _h(request: httpx.Request) -> httpx.Response:
+        seen_uas.append(request.headers.get("User-Agent", ""))
+        return httpx.Response(200, text="<p>ok</p>")
+
+    transport = httpx.MockTransport(_h)
+    await _fetch_and_concat(
+        "q",
+        ["https://a.test"],
+        cache=None,
+        transport=transport,
+        user_agent=custom_ua,
+    )
+
+    assert seen_uas == [custom_ua]
