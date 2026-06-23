@@ -1,0 +1,1 @@
+"""Tests for entry-point scripts under stock_analysis_agent.script."""
