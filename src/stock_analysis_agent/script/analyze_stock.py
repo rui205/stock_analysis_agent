@@ -1,24 +1,23 @@
-"""CLI entry: get_stock_snapshot + web_search agent → JSON analysis → Feishu doc.
+"""CLI entry: get_stock_snapshot + web_search agent → JSON analysis → local Markdown file.
 
 Usage::
 
     python -m stock_analysis_agent.script.analyze_stock 02319.HK
     python -m stock_analysis_agent.script.analyze_stock 600519.SH --no-peers
 
+The rendered report is written to ``<project-root>/output/<symbol>-<timestamp>.md``.
+
 Exit codes:
-    0 — success (doc created or appended).
+    0 — success (markdown written to ``output/``).
     1 — unhandled exception (caught at top level).
     2 — agent output failed JSON / pydantic validation.
     3 — ``ToolExecutionError`` from the agent.
-    4 — ``FeishuCliError`` from the wrapper.
 """
 from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
-import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -29,7 +28,6 @@ from pydantic import ValidationError
 from stock_analysis_agent.agent.analysis_schema import StockAnalysis
 from stock_analysis_agent.agent.exceptions import ToolExecutionError
 from stock_analysis_agent.agent.stock_analysis import StockAnalysisAgent
-from stock_analysis_agent.tools.feishu_cli import FeishuCli, FeishuCliError
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +35,31 @@ EXIT_OK = 0
 EXIT_UNHANDLED = 1
 EXIT_PARSE = 2
 EXIT_TOOL = 3
-EXIT_FEISHU = 4
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+
+#: Directory under the project root where the rendered Markdown is written.
+#: Resolved as the parent of ``src/`` so the path is stable regardless of
+#: the caller's CWD.
+_OUTPUT_DIR_NAME = "output"
+
+
+def _project_root() -> Path:
+    """Return the project root directory (the directory containing ``pyproject.toml``).
+
+    Resolved by walking up from this file: ``script/analyze_stock.py`` lives
+    four levels below the root (``src/<package>/script/...``).
+    """
+    return Path(__file__).resolve().parents[3]
+
+
+def output_dir() -> Path:
+    """Return the absolute path to the ``output/`` directory at the project root."""
+    return _project_root() / _OUTPUT_DIR_NAME
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +88,7 @@ def _strip_code_fence(text: str) -> str:
 
 
 def render_markdown(a: StockAnalysis) -> str:
-    """Render a :class:`StockAnalysis` to a Feishu-doc-ready Markdown string."""
+    """Render a :class:`StockAnalysis` to a Markdown string."""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
     return "\n".join(
         [
@@ -99,6 +121,18 @@ def render_markdown(a: StockAnalysis) -> str:
     )
 
 
+def build_output_path(symbol: str, output_dir: Path, now_epoch: int | None = None) -> Path:
+    """Build the path to which the rendered Markdown for ``symbol`` is written.
+
+    Files are timestamped so repeated runs do not clobber history. Pure
+    function — the caller is responsible for ``mkdir(parents=True)`` and
+    writing the file.
+    """
+    ts = now_epoch if now_epoch is not None else int(time.time())
+    safe_symbol = symbol.replace(".", "_").replace("/", "_")
+    return output_dir / f"stock-analysis-{safe_symbol}-{ts}.md"
+
+
 # ---------------------------------------------------------------------------
 # argparse
 # ---------------------------------------------------------------------------
@@ -107,7 +141,10 @@ def render_markdown(a: StockAnalysis) -> str:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="analyze_stock",
-        description="Run an LLM agent on a stock symbol and upload the analysis to Feishu.",
+        description=(
+            "Run an LLM agent on a stock symbol and write the rendered "
+            "analysis as a Markdown file under <project-root>/output/."
+        ),
     )
     parser.add_argument("symbol", help="Stock code, e.g. 02319.HK, 600519.SH, 000001.SZ")
     parser.add_argument(
@@ -129,12 +166,11 @@ def _build_parser() -> argparse.ArgumentParser:
              "scraper). Analysis relies on get_stock_snapshot + LLM knowledge only.",
     )
     parser.add_argument(
-        "--lark-bin", default=os.environ.get("LARK_CLI_BIN", "lark-cli"),
-        help="Path / name of the lark-cli binary (default: $LARK_CLI_BIN or 'lark-cli').",
-    )
-    parser.add_argument(
-        "--title-prefix", default=None,
-        help="Title prefix for the Feishu doc (default: '<symbol> 分析报告').",
+        "--output-dir", type=Path, default=None,
+        help=(
+            "Directory to write the rendered Markdown into. Defaults to "
+            "<project-root>/output/. Created if missing."
+        ),
     )
     parser.add_argument(
         "--verbose", action="store_true", help="Enable DEBUG-level logging.",
@@ -172,11 +208,8 @@ def run(args: argparse.Namespace) -> int:
     """Top-level orchestration. Returns the process exit code.
 
     Split out from ``main`` so tests can drive it with a constructed
-    ``argparse.Namespace`` and monkeypatched ``StockAnalysisAgent`` /
-    ``FeishuCli``.
+    ``argparse.Namespace`` and monkeypatched ``StockAnalysisAgent``.
     """
-    title_prefix = args.title_prefix or f"{args.symbol} 分析报告"
-
     # 1. Build agent.
     agent = StockAnalysisAgent(
         symbol=args.symbol,
@@ -224,40 +257,13 @@ def run(args: argparse.Namespace) -> int:
         logger.error("raw output (first 500 chars): %s", cleaned[:500])
         return EXIT_PARSE
 
-    # 4. Render Markdown + write temp file.
+    # 4. Render Markdown + write to <project-root>/output/.
     markdown = render_markdown(analysis)
-    tmp_dir = Path(tempfile.gettempdir())
-    tmp = tmp_dir / f"stock-analysis-{args.symbol.replace('.', '_')}-{int(time.time())}.md"
-    tmp.write_text(markdown, encoding="utf-8")
-    logger.info("wrote temp markdown: %s", tmp)
-
-    # 5. lark-cli (Feishu CLI) — append or create.
-    # ``+search`` does not support a server-side title-prefix filter, so we
-    # query by symbol and filter the returned titles client-side.
-    cli = FeishuCli(binary=args.lark_bin)
-    try:
-        candidates = cli.list_matching_docs(args.symbol)
-    except FeishuCliError as e:
-        logger.error("lark-cli search failed: %s", e)
-        return EXIT_FEISHU
-    existing = [doc for doc in candidates if doc.title.startswith(title_prefix)]
-
-    if existing:
-        target = existing[0]
-        logger.info("appending to existing doc: %s", target.url)
-        try:
-            cli.append_to_doc(target.doc_id, content_file=tmp)
-        except FeishuCliError as e:
-            logger.error("lark-cli append failed: %s", e)
-            return EXIT_FEISHU
-    else:
-        logger.info("creating new doc with prefix: %s", title_prefix)
-        try:
-            ref = cli.create_doc(title=title_prefix, content_file=tmp)
-        except FeishuCliError as e:
-            logger.error("lark-cli create failed: %s", e)
-            return EXIT_FEISHU
-        logger.info("created doc: %s", ref.url)
+    out_dir = args.output_dir if args.output_dir is not None else output_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = build_output_path(args.symbol, out_dir)
+    out_path.write_text(markdown, encoding="utf-8")
+    logger.info("wrote markdown: %s", out_path)
 
     return EXIT_OK
 

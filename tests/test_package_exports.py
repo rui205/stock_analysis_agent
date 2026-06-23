@@ -10,11 +10,12 @@ def test_agent_package_exports() -> None:
 
 
 def test_tools_package_exports() -> None:
-    from stock_analysis_agent.tools import FeishuCli, FeishuCliError, FeishuDocRef
+    from langchain_core.tools import StructuredTool
+    from stock_analysis_agent.tools import _extract_text, _web_search
 
-    assert FeishuCli.__name__ == "FeishuCli"
-    assert FeishuDocRef.__name__ == "FeishuDocRef"
-    assert FeishuCliError.__name__ == "FeishuCliError"
+    assert callable(_extract_text)
+    assert isinstance(_web_search, StructuredTool)
+    assert _web_search.name == "web_search"
 
 
 def test_top_level_package_exports() -> None:
@@ -23,9 +24,6 @@ def test_top_level_package_exports() -> None:
     expected = {
         "StockAnalysis",
         "StockAnalysisAgent",
-        "FeishuCli",
-        "FeishuDocRef",
-        "FeishuCliError",
     }
     missing = expected - set(stock_analysis_agent.__all__)
     assert not missing, f"top-level __all__ missing: {missing}"

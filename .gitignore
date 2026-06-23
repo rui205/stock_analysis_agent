@@ -48,9 +48,22 @@ htmlcov/
 *.swp
 *.swo
 .DS_Store
+.venv/
+.ruff_cache/
+.pytest_cache/
+.claude/
+.agents/
 
 # Model-generated artifacts (brainstorming specs, implementation plans, etc.)
 # These are produced by AI-assisted dev skills and are kept on disk for
 # reference but should not enter the repo. Already-tracked files are
 # left in the index; this rule only blocks new entries.
 docs/superpowers/
+
+# Agent tooling state (.agents/ workspace, skills lockfile)
+.agents/
+skills-lock.json
+
+# Runtime output from CLI scripts (e.g. analyze_stock.py writes reports here)
+output/
+docs/

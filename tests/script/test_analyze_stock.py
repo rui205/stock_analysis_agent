@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -12,9 +13,10 @@ from stock_analysis_agent.agent.analysis_schema import StockAnalysis
 from stock_analysis_agent.script.analyze_stock import (
     _build_parser,
     _strip_code_fence,
+    build_output_path,
+    output_dir,
     render_markdown,
 )
-from stock_analysis_agent.tools.feishu_cli import FeishuCli, FeishuCliError, FeishuDocRef
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +68,6 @@ def _sample_analysis() -> StockAnalysis:
 def test_render_markdown_contains_title_and_timestamp() -> None:
     md = render_markdown(_sample_analysis())
     assert "# 02319.HK 分析报告" in md
-    import re
     assert re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", md)
 
 
@@ -87,6 +88,30 @@ def test_render_markdown_contains_field_values() -> None:
 
 
 # ---------------------------------------------------------------------------
+# output path helpers
+# ---------------------------------------------------------------------------
+
+
+def test_build_output_path_uses_timestamp_and_safe_symbol(tmp_path: Path) -> None:
+    p = build_output_path("02319.HK", tmp_path, now_epoch=1_700_000_000)
+    assert p == tmp_path / "stock-analysis-02319_HK-1700000000.md"
+    assert p.suffix == ".md"
+
+
+def test_build_output_path_sanitises_slash_in_symbol(tmp_path: Path) -> None:
+    """Slashes in the symbol must not create subdirectories inside output/."""
+    p = build_output_path("foo/bar", tmp_path, now_epoch=1)
+    assert p.parent == tmp_path
+    assert "/" not in p.name
+
+
+def test_output_dir_resolves_to_project_root_output() -> None:
+    """``output_dir()`` lives under the project root, not the user's CWD."""
+    expected = Path(__file__).resolve().parents[2] / "output"
+    assert output_dir() == expected
+
+
+# ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
 
@@ -102,8 +127,7 @@ def test_parser_defaults() -> None:
     assert args.symbol == "02319.HK"
     assert args.include_peers is True
     assert args.peer_count == 2
-    # title_prefix is None at parse time; run() resolves it from `symbol`.
-    assert args.title_prefix is None
+    assert args.output_dir is None
     assert args.verbose is False
 
 
@@ -112,9 +136,9 @@ def test_parser_no_peers_flag() -> None:
     assert args.include_peers is False
 
 
-def test_parser_custom_title_prefix() -> None:
-    args = _build_parser().parse_args(["02319.HK", "--title-prefix", "蒙牛日报"])
-    assert args.title_prefix == "蒙牛日报"
+def test_parser_output_dir_flag() -> None:
+    args = _build_parser().parse_args(["02319.HK", "--output-dir", "/tmp/custom-out"])
+    assert args.output_dir == Path("/tmp/custom-out")
 
 
 # ---------------------------------------------------------------------------
@@ -151,9 +175,10 @@ def _valid_json_payload() -> str:
     )
 
 
-def test_run_creates_new_doc_when_no_existing_match(
-    monkeypatch: pytest.MonkeyPatch,
+def test_run_writes_markdown_under_output_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """Successful run writes a timestamped Markdown file into ``output/``."""
     from stock_analysis_agent.script import analyze_stock
 
     fake_agent = _fake_agent_with_content(_valid_json_payload())
@@ -161,48 +186,23 @@ def test_run_creates_new_doc_when_no_existing_match(
         analyze_stock, "StockAnalysisAgent", lambda **kwargs: fake_agent
     )
 
-    fake_cli = MagicMock(spec=FeishuCli)
-    fake_cli.list_matching_docs.return_value = []
-    fake_cli.create_doc.return_value = FeishuDocRef(
-        doc_id="d1", url="https://x", title="02319.HK 分析报告"
+    args = _build_parser().parse_args(
+        ["02319.HK", "--output-dir", str(tmp_path)]
     )
-    monkeypatch.setattr(analyze_stock, "FeishuCli", lambda **kwargs: fake_cli)
-
-    args = _build_parser().parse_args(["02319.HK"])
     rc = analyze_stock.run(args)
     assert rc == 0
-    fake_cli.create_doc.assert_called_once()
-    fake_cli.append_to_doc.assert_not_called()
 
-
-def test_run_appends_when_existing_doc_matches(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from stock_analysis_agent.script import analyze_stock
-
-    fake_agent = _fake_agent_with_content(_valid_json_payload())
-    monkeypatch.setattr(
-        analyze_stock, "StockAnalysisAgent", lambda **kwargs: fake_agent
-    )
-
-    fake_cli = MagicMock(spec=FeishuCli)
-    fake_cli.list_matching_docs.return_value = [
-        FeishuDocRef(doc_id="existing", url="https://old", title="02319.HK 分析报告")
-    ]
-    monkeypatch.setattr(analyze_stock, "FeishuCli", lambda **kwargs: fake_cli)
-
-    args = _build_parser().parse_args(["02319.HK"])
-    rc = analyze_stock.run(args)
-    assert rc == 0
-    fake_cli.append_to_doc.assert_called_once()
-    fake_cli.create_doc.assert_not_called()
-    # The first existing match should be the target.
-    call = fake_cli.append_to_doc.call_args
-    assert call.args[0] == "existing"
+    # Exactly one markdown file, named for the symbol, written into tmp_path.
+    written = list(tmp_path.glob("stock-analysis-02319_HK-*.md"))
+    assert len(written) == 1
+    text = written[0].read_text(encoding="utf-8")
+    assert "# 02319.HK 分析报告" in text
+    assert "## 基本面" in text
+    assert "乳制品行业龙头。" in text
 
 
 def test_run_exits_2_when_agent_output_is_not_json(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     from stock_analysis_agent.script import analyze_stock
 
@@ -211,20 +211,17 @@ def test_run_exits_2_when_agent_output_is_not_json(
         analyze_stock, "StockAnalysisAgent", lambda **kwargs: fake_agent
     )
 
-    fake_cli = MagicMock(spec=FeishuCli)
-    monkeypatch.setattr(analyze_stock, "FeishuCli", lambda **kwargs: fake_cli)
-
-    args = _build_parser().parse_args(["02319.HK"])
+    args = _build_parser().parse_args(
+        ["02319.HK", "--output-dir", str(tmp_path)]
+    )
     rc = analyze_stock.run(args)
     assert rc == 2
-    # The CLI must not be touched on JSON validation failure.
-    fake_cli.list_matching_docs.assert_not_called()
-    fake_cli.create_doc.assert_not_called()
-    fake_cli.append_to_doc.assert_not_called()
+    # No file should be written when the agent output is invalid.
+    assert list(tmp_path.glob("stock-analysis-*.md")) == []
 
 
 def test_run_strips_code_fence_before_validating(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     from stock_analysis_agent.script import analyze_stock
 
@@ -234,22 +231,19 @@ def test_run_strips_code_fence_before_validating(
         analyze_stock, "StockAnalysisAgent", lambda **kwargs: fake_agent
     )
 
-    fake_cli = MagicMock(spec=FeishuCli)
-    fake_cli.list_matching_docs.return_value = []
-    fake_cli.create_doc.return_value = FeishuDocRef(
-        doc_id="d1", url="https://x", title="02319.HK 分析报告"
+    args = _build_parser().parse_args(
+        ["02319.HK", "--output-dir", str(tmp_path)]
     )
-    monkeypatch.setattr(analyze_stock, "FeishuCli", lambda **kwargs: fake_cli)
-
-    args = _build_parser().parse_args(["02319.HK"])
     rc = analyze_stock.run(args)
     assert rc == 0
-    fake_cli.create_doc.assert_called_once()
+    written = list(tmp_path.glob("stock-analysis-02319_HK-*.md"))
+    assert len(written) == 1
 
 
-def test_run_exits_4_when_lark_cli_raises(
-    monkeypatch: pytest.MonkeyPatch,
+def test_run_creates_output_dir_when_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
+    """The output directory must be created if it does not already exist."""
     from stock_analysis_agent.script import analyze_stock
 
     fake_agent = _fake_agent_with_content(_valid_json_payload())
@@ -257,49 +251,33 @@ def test_run_exits_4_when_lark_cli_raises(
         analyze_stock, "StockAnalysisAgent", lambda **kwargs: fake_agent
     )
 
-    fake_cli = MagicMock(spec=FeishuCli)
-    fake_cli.list_matching_docs.side_effect = FeishuCliError(
-        "boom", returncode=1, stderr="perm denied"
+    target = tmp_path / "fresh" / "nested" / "output"
+    assert not target.exists()
+
+    args = _build_parser().parse_args(
+        ["02319.HK", "--output-dir", str(target)]
     )
-    monkeypatch.setattr(analyze_stock, "FeishuCli", lambda **kwargs: fake_cli)
-
-    args = _build_parser().parse_args(["02319.HK"])
     rc = analyze_stock.run(args)
-    assert rc == 4
+    assert rc == 0
+    assert target.is_dir()
+    assert list(target.glob("stock-analysis-02319_HK-*.md"))
 
 
-def test_run_writes_temp_markdown_file(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_run_exits_3_when_agent_tools_fail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """The temp file path passed to FeishuCli must exist on disk and
-    contain the rendered Markdown."""
     from stock_analysis_agent.script import analyze_stock
+    from stock_analysis_agent.agent.exceptions import ToolExecutionError
 
-    # Redirect tempfile.gettempdir() so we can inspect it.
-    monkeypatch.setattr(analyze_stock.tempfile, "gettempdir", lambda: str(tmp_path))
-
-    fake_agent = _fake_agent_with_content(_valid_json_payload())
+    fake_agent = MagicMock()
+    fake_agent.stream.side_effect = ToolExecutionError("tool blew up")
     monkeypatch.setattr(
         analyze_stock, "StockAnalysisAgent", lambda **kwargs: fake_agent
     )
 
-    fake_cli = MagicMock(spec=FeishuCli)
-    fake_cli.list_matching_docs.return_value = []
-    captured: dict[str, Path] = {}
-
-    def _capture_create(*, title: str, content_file: Path) -> FeishuDocRef:
-        captured["file"] = content_file
-        return FeishuDocRef(doc_id="d1", url="https://x", title=title)
-
-    fake_cli.create_doc.side_effect = _capture_create
-    monkeypatch.setattr(analyze_stock, "FeishuCli", lambda **kwargs: fake_cli)
-
-    args = _build_parser().parse_args(["02319.HK"])
+    args = _build_parser().parse_args(
+        ["02319.HK", "--output-dir", str(tmp_path)]
+    )
     rc = analyze_stock.run(args)
-    assert rc == 0
-    assert "file" in captured
-    on_disk = Path(captured["file"])
-    assert on_disk.exists()
-    text = on_disk.read_text(encoding="utf-8")
-    assert "02319.HK" in text
-    assert "## 基本面" in text
+    assert rc == 3
+    assert list(tmp_path.glob("stock-analysis-*.md")) == []
