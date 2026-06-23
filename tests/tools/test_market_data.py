@@ -389,6 +389,130 @@ class TestDetectPeers:
         result = md._detect_peers("02319.HK", peer_count=2)
         assert result == ["600887.SH", "600597.SH"]
 
+    def test_detect_peers_invokes_em_request_hook(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_detect_peers must call _install_em_request_hook so that
+        downstream akshare ``*_em`` requests carry EM_HEADERS. The
+        hook is idempotent — calling _detect_peers multiple times
+        should not re-patch requests.get."""
+        import akshare as ak
+        import pandas as pd
+
+        industries = pd.DataFrame([{"板块名称": "白酒"}])
+        cons = pd.DataFrame(
+            [
+                {"代码": "600519", "名称": "贵州茅台", "总市值": 20000},
+            ]
+        )
+
+        monkeypatch.setattr(ak, "stock_board_industry_name_em", lambda: industries)
+        monkeypatch.setattr(ak, "stock_board_industry_cons_em", lambda symbol: cons)
+        fake_info = pd.DataFrame([{"行业": "白酒"}])
+        monkeypatch.setattr(ak, "stock_individual_info_em", lambda symbol: fake_info)
+
+        from stock_analysis_agent.tools import market_data as md
+
+        # Reset hook state so the test exercises the install path.
+        md._em_hook_installed = False
+        original = md._install_em_request_hook
+        calls: list[int] = []
+
+        def _spy() -> None:
+            calls.append(1)
+            return original()
+
+        monkeypatch.setattr(md, "_install_em_request_hook", _spy)
+
+        md._detect_peers("600519.SH", peer_count=1)
+        md._detect_peers("600519.SH", peer_count=1)
+        # _install_em_request_hook is referenced from _detect_peers; the
+        # spy records two invocations even though the underlying
+        # install is idempotent.
+        assert len(calls) == 2
+
+
+class TestInstallEmRequestHook:
+    """_install_em_request_hook: monkey-patch requests.get for eastmoney."""
+
+    def test_hook_patches_requests_get_for_eastmoney_urls(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the URL contains 'eastmoney.com', the wrapped get must
+        inject EM_HEADERS into kwargs['headers'] before delegating."""
+        import requests
+
+        from stock_analysis_agent.tools import market_data as md
+
+        captured: dict[str, object] = {}
+
+        def _fake_get(url, **kwargs):  # type: ignore[no-untyped-def]
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            return None
+
+        monkeypatch.setattr(requests, "get", _fake_get)
+        # Force re-install so the test sees the patched get.
+        md._em_hook_installed = False
+        md._install_em_request_hook()
+
+        # Call through the patched requests.get.
+        requests.get("https://push2.eastmoney.com/api/qt/clist/get")
+
+        kwargs = captured["kwargs"]  # type: ignore[index]
+        assert "headers" in kwargs
+        headers = kwargs["headers"]  # type: ignore[index]
+        for key, value in md.EM_HEADERS.items():
+            assert headers[key] == value  # type: ignore[index]
+        # Restore for downstream tests.
+        md._em_hook_installed = False
+
+    def test_hook_does_not_touch_non_eastmoney_urls(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-eastmoney URLs should pass through to the original get
+        without any header injection."""
+        import requests
+
+        from stock_analysis_agent.tools import market_data as md
+
+        captured: dict[str, object] = {}
+
+        def _fake_get(url, **kwargs):  # type: ignore[no-untyped-def]
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            return None
+
+        monkeypatch.setattr(requests, "get", _fake_get)
+        md._em_hook_installed = False
+        md._install_em_request_hook()
+
+        requests.get("https://hq.sinajs.cn/list=sh600887", headers={"X-Custom": "y"})
+
+        # Original headers must be preserved untouched.
+        assert captured["kwargs"] == {"headers": {"X-Custom": "y"}}  # type: ignore[index]
+        md._em_hook_installed = False
+
+    def test_hook_is_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Calling _install_em_request_hook twice must not re-wrap
+        requests.get (which would stack wrappers and re-inject headers)."""
+        import requests
+
+        from stock_analysis_agent.tools import market_data as md
+
+        # Reset hook state for the test.
+        md._em_hook_installed = False
+        original_get = requests.get
+        try:
+            md._install_em_request_hook()
+            patched_once = requests.get
+            md._install_em_request_hook()
+            patched_twice = requests.get
+            assert patched_once is patched_twice
+        finally:
+            requests.get = original_get
+            md._em_hook_installed = False
+
 
 class TestFetchAndConcat:
     """_fetch_and_concat aggregator + cache behavior."""

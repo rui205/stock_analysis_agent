@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Literal
+from typing import Any, Literal
 
 from stock_analysis_agent.memory.file_cache import _FileCache
 from stock_analysis_agent.tools.web_search import _Provider
@@ -15,6 +15,55 @@ ALL_SOURCES: tuple[SourceName, ...] = (
     "akshare",
     "mootdx",
 )
+
+# HTTP headers sent on every eastmoney request. Eastmoney's
+# `push2.eastmoney.com` endpoints reject bare ``requests.get`` calls
+# with no User-Agent / Referer, returning proxy errors. These headers
+# match what quote.eastmoney.com sends in the browser and unblock
+# the ``*_em`` family of akshare functions used by ``_detect_peers``.
+EM_HEADERS: dict[str, str] = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://quote.eastmoney.com/",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+}
+EM_HOST_MARKER: str = "eastmoney.com"
+
+# Tracks whether ``_install_em_request_hook`` has already been applied
+# so we only patch ``requests.get`` once per process.
+_em_hook_installed: bool = False
+
+
+def _install_em_request_hook() -> None:
+    """Wrap ``requests.get`` so eastmoney URLs get EM_HEADERS injected.
+
+    Akshare's ``*_em`` functions call ``requests.get(url, params=...)``
+    with no headers; eastmoney's CDN rejects those requests with proxy
+    errors. The hook here is a one-time, process-wide monkey-patch that
+    inspects the URL and, when it targets eastmoney, injects
+    ``EM_HEADERS`` via ``kwargs['headers'].update(...)`` before
+    delegating to the original ``requests.get``.
+    """
+    global _em_hook_installed
+    if _em_hook_installed:
+        return
+    import requests
+
+    _original_get = requests.get
+
+    def _patched_get(  # type: ignore[no-untyped-def]
+        url: Any, **kwargs: Any
+    ):
+        if isinstance(url, str) and EM_HOST_MARKER in url:
+            kwargs.setdefault("headers", {}).update(EM_HEADERS)
+        return _original_get(url, **kwargs)
+
+    requests.get = _patched_get  # type: ignore[assignment]
+    _em_hook_installed = True
 
 MOOTDX_DEFAULT_SERVER: str = "std.tdx.com.cn"
 
@@ -329,6 +378,12 @@ def _detect_peers(symbol: str, peer_count: int) -> list[str] | None:
         unreachable, no industry mapped, empty cons, etc.).
     """
     import akshare as ak
+
+    # Ensure the eastmoney request hook is active so that all
+    # ``ak.*_em`` calls below carry the User-Agent / Referer that
+    # quote.eastmoney.com expects. Idempotent: subsequent calls are
+    # no-ops thanks to ``_em_hook_installed``.
+    _install_em_request_hook()
 
     if "." not in symbol:
         return None
