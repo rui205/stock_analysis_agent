@@ -54,13 +54,15 @@ class TestFetchSina:
 
     @pytest.mark.asyncio
     async def test_fetch_sina_parses_hk_quote(self) -> None:
-        """Mock the httpx response, assert _fetch_sina returns a snippet
-        that includes the parsed price/change fields."""
+        """Mock the httpx response with the real Sina HK payload (verbatim
+        curl capture) and assert the HK branch renders the verified
+        field indices without leaking the English name or misrouting
+        to the A-share branch."""
         sample_csv = (
-            'var hq_str_rt_hk02319="MENGNIU DAIRY,蒙牛股份,15.940,15.570,'
-            "15.940,15.340,15.890,0.320,2.055,15.880,15.890,"
-            "278092437.740,17684472,36.161,0.000,17.411,13.374,"
-            '2026/06/22,16:08:16,100|0,N|Y,Y,15.850|15.060|16.640,'
+            'var hq_str_rt_hk02319="MENGNIU DAIRY,蒙牛乳业,15.890,15.890,'
+            "16.250,15.890,16.010,0.120,0.755,16.000,16.010,"
+            "111674874.580,6948592,36.427,0.000,17.411,13.374,"
+            '2026/06/23,11:35:34,100|0,N|Y,Y,16.000|15.250|16.500,'
             "0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,..."
             '";'
         )
@@ -72,34 +74,64 @@ class TestFetchSina:
             "rt_hk02319",
             transport=httpx.MockTransport(_h),
         )
-        # Result must contain the price and the change percent.
-        assert "15.890" in result
-        assert "0.320" in result
-        assert "+2.06%" in result or "2.06%" in result
-        # Header should mark this as the sina source.
+        # Header marks this as the sina source.
         assert "[sina]" in result
+        # Real HK payload values must render with strict formatting.
+        assert "名称: 蒙牛乳业" in result
+        assert "现价: 16.010" in result
+        assert "涨跌: +0.120 (+0.76%)" in result
+        assert "今开: 15.890" in result
+        assert "昨收: 15.890" in result
+        assert "最高: 16.250" in result
+        assert "最低: 15.890" in result
+        assert "成交量: 6948592 股" in result
+        assert "成交额: 111674874.580 HKD" in result
+        assert "PE: 17.411" in result
+        assert "PB: 13.374" in result
+        # English name (fields[0]) must NOT leak into the output — the
+        # HK branch should prefer fields[1] (Chinese name).
+        assert "MENGNIU DAIRY" not in result
 
     @pytest.mark.asyncio
     async def test_fetch_sina_parses_a_share_quote(self) -> None:
-        """Mock the httpx response with a short A-share CSV (fewer than
-        32 fields), assert the A-share branch renders name/open/prev_close/
-        current/high/low."""
+        """Mock the httpx response with a real Sina A-share payload
+        (sh600887, ~33 fields — NOT a short fixture) and assert the
+        A-share branch handles it. The previous `len(fields) >= 32`
+        heuristic wrongly routed this to the HK branch."""
         sample_csv = (
-            'var hq_str_sh600519="贵州茅台,1700.00,1690.00,1710.00,'
-            '1705.00,1695.00,12345.67,12345678,1.234,5.6,...";'
+            'var hq_str_sh600887="伊利股份,24.560,24.630,24.530,25.110,'
+            '24.510,24.530,24.540,35784473,886842735.000,16516,24.530,'
+            "24.520,24.540,24.500,24.560,1718.320,5.720,"
+            '2026/06/23,11:35:34,0,0,0,0,0,0,0,0,0,0,0,0,...";'
         )
 
         def _h(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, text=sample_csv)
 
         result = await md._fetch_sina(
-            "sh600519",
+            "sh600887",
             transport=httpx.MockTransport(_h),
         )
-        # A-share branch should render name + price + OHLC.
-        assert "贵州茅台" in result
-        assert "1710.000" in result
+        # Header marks this as the sina source.
         assert "[sina]" in result
+        # A-share branch should render the real payload values.
+        assert "名称: 伊利股份" in result
+        assert "现价: 24.530" in result
+        # change/change_pct are computed (not in the basic A-share payload):
+        # 24.530 - 24.630 = -0.100; -0.100 / 24.630 * 100 = -0.4060...%
+        assert "涨跌: -0.100 (-0.41%)" in result
+        assert "今开: 24.560" in result
+        assert "昨收: 24.630" in result
+        assert "最高: 25.110" in result
+        assert "最低: 24.510" in result
+        assert "成交量: 35784473 股" in result
+        assert "成交额: 886842735.000 CNY" in result
+        # A-share payload does not contain PE/PB; those lines must not
+        # leak from the HK branch.
+        assert "PE:" not in result
+        assert "PB:" not in result
+        # MENGNIU is from the HK fixture and must not leak.
+        assert "MENGNIU" not in result
 
     @pytest.mark.asyncio
     async def test_fetch_sina_returns_error_segment_on_http_failure(self) -> None:

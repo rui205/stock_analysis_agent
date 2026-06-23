@@ -138,13 +138,27 @@ async def _fetch_sina(
     return "[sina]\n" + _parse_sina_csv(body) + "\n"
 
 
+def _is_a_share(fields: list[str]) -> bool:
+    """Return True when `fields` follows the A-share CSV layout.
+
+    A-share rows place a numeric open price at fields[1]; HK rows place
+    the Chinese name there (English name at fields[0]). Detecting the
+    layout from field count alone is unreliable because real A-share
+    payloads can have ~33 fields — the same range as HK responses.
+    """
+    try:
+        float(fields[1])
+        return True
+    except (ValueError, IndexError):
+        return False
+
+
 def _parse_sina_csv(body: str) -> str:
     """Parse a `var hq_str_xxx="...";` response into readable text.
 
-    Sina's payload is GBK-encoded CSV-ish. The HK-standard layout
-    (name, open, prev_close, current, high, low, change, change_pct,
-    ...) is used when ``len(fields) >= 32``; A-share shares a shorter
-    layout. We render a defensive summary for both.
+    Sina's payload is GBK-encoded CSV-ish. Field layouts differ between
+    HK and A-share rows and are detected via ``_is_a_share`` (numeric at
+    fields[1] ⇒ A-share, Chinese name there ⇒ HK).
     """
     # Extract the quoted portion.
     start = body.find('"')
@@ -155,18 +169,23 @@ def _parse_sina_csv(body: str) -> str:
     fields = raw.split(",")
     if len(fields) < 6:
         return f"[error: too few fields: {len(fields)}]"
-    name_cn = fields[0] if fields[0] else "(unknown)"
-    try:
-        if len(fields) >= 32:  # HK layout
-            open_p = float(fields[2])
-            prev_close = float(fields[3])
-            current = float(fields[6])
+    if _is_a_share(fields):
+        # A-share layout (verified from real Sina responses):
+        # [0] name_cn, [1] open, [2] prev_close, [3] current, [4] high,
+        # [5] low, [6] bid, [7] ask, [8] volume, [9] amount, [10] trade count.
+        try:
+            name_cn = fields[0]
+            open_p = float(fields[1])
+            prev_close = float(fields[2])
+            current = float(fields[3])
             high = float(fields[4])
             low = float(fields[5])
-            change = float(fields[7])
-            change_pct = float(fields[8])
-            volume = fields[12]
-            amount = fields[11]
+            volume = fields[8]
+            amount = fields[9]
+            # change / change_pct are not in the basic A-share payload;
+            # derive them so the rendered output stays consistent with HK.
+            change = current - prev_close
+            change_pct = (change / prev_close * 100) if prev_close else 0.0
             return (
                 f"名称: {name_cn}\n"
                 f"现价: {current:.3f}\n"
@@ -174,19 +193,37 @@ def _parse_sina_csv(body: str) -> str:
                 f"今开: {open_p:.3f}  昨收: {prev_close:.3f}  "
                 f"最高: {high:.3f}  最低: {low:.3f}\n"
                 f"成交量: {volume} 股\n"
-                f"成交额: {amount}\n"
+                f"成交额: {amount} CNY\n"
             )
-        # A-share layout: open, prev_close, current, high, low, ...
-        open_p = float(fields[1])
-        prev_close = float(fields[2])
-        current = float(fields[3])
+        except (ValueError, IndexError) as e:
+            return f"[error: parse failed: {e}]"
+    # HK layout (verified from real Sina responses):
+    # [0] name_en, [1] name_cn, [2] open, [3] prev_close, [4] high,
+    # [5] low, [6] current, [7] change, [8] change_pct, [9] bid,
+    # [10] ask, [11] amount (HKD), [12] volume, [13] turnover,
+    # [15] PE, [16] PB.
+    try:
+        name_cn = fields[1] if fields[1] else fields[0]
+        open_p = float(fields[2])
+        prev_close = float(fields[3])
+        current = float(fields[6])
         high = float(fields[4])
         low = float(fields[5])
+        change = float(fields[7])
+        change_pct = float(fields[8])
+        volume = fields[12]
+        amount = fields[11]
+        pe = fields[15] if len(fields) > 15 and fields[15] else "--"
+        pb = fields[16] if len(fields) > 16 and fields[16] else "--"
         return (
             f"名称: {name_cn}\n"
             f"现价: {current:.3f}\n"
+            f"涨跌: {change:+.3f} ({change_pct:+.2f}%)\n"
             f"今开: {open_p:.3f}  昨收: {prev_close:.3f}  "
             f"最高: {high:.3f}  最低: {low:.3f}\n"
+            f"成交量: {volume} 股\n"
+            f"成交额: {amount} HKD\n"
+            f"PE: {pe}  PB: {pb}\n"
         )
     except (ValueError, IndexError) as e:
         return f"[error: parse failed: {e}]"
