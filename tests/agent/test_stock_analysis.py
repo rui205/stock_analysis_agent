@@ -137,3 +137,15 @@ def test_include_web_search_false_with_empty_site_list_does_not_raise() -> None:
         site_list=[],
     )
     assert "web_search" not in {t.name for t in agent.tools}
+
+
+def test_default_system_prompt_explains_structured_tool_output() -> None:
+    """The default prompt must describe the structured JSON shape returned
+    by get_stock_snapshot so the LLM knows how to read per-source data."""
+    agent = StockAnalysisAgent(symbol="02319.HK")
+    prompt = agent.system_prompt_value
+    assert "tushare" in prompt
+    assert "akshare" in prompt
+    assert "mootdx" in prompt
+    assert "data" in prompt
+    assert "error" in prompt
