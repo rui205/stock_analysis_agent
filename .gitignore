@@ -48,3 +48,9 @@ htmlcov/
 *.swp
 *.swo
 .DS_Store
+
+# Model-generated artifacts (brainstorming specs, implementation plans, etc.)
+# These are produced by AI-assisted dev skills and are kept on disk for
+# reference but should not enter the repo. Already-tracked files are
+# left in the index; this rule only blocks new entries.
+docs/superpowers/
