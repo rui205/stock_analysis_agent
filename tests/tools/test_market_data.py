@@ -680,3 +680,34 @@ class TestGetStockSnapshotTool:
         assert "[tushare]" in result
         assert "[akshare]" in result
         assert "02319.HK-tushare" in result
+
+
+class TestHelpers:
+    """_now_iso() and _json_default() helpers used by the aggregator."""
+
+    def test_now_iso_returns_iso8601_with_shanghai_offset(self) -> None:
+        """_now_iso() returns an ISO 8601 string with +08:00 offset."""
+        result = md._now_iso()
+        # Format: YYYY-MM-DDTHH:MM:SS+08:00 (seconds precision).
+        import re
+        assert re.match(
+            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+08:00$", result
+        ), f"unexpected format: {result!r}"
+
+    def test_json_default_serializes_date(self) -> None:
+        """datetime.date objects become ISO 8601 strings."""
+        import datetime as _dt
+        result = md._json_default(_dt.date(2026, 6, 23))
+        assert result == "2026-06-23"
+
+    def test_json_default_serializes_datetime(self) -> None:
+        """datetime.datetime objects become ISO 8601 strings."""
+        import datetime as _dt
+        dt = _dt.datetime(2026, 6, 23, 15, 30, 0)
+        result = md._json_default(dt)
+        assert result.startswith("2026-06-23T15:30:00")
+
+    def test_json_default_raises_typeerror_for_unsupported_type(self) -> None:
+        """Unsupported types raise TypeError with a helpful message."""
+        with pytest.raises(TypeError, match="not JSON serializable"):
+            md._json_default(object())

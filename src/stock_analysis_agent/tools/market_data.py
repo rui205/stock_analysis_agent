@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from stock_analysis_agent.memory.file_cache import _FileCache
 from stock_analysis_agent.tools.web_search import _Provider
@@ -87,6 +89,40 @@ PEER_FETCH_SOURCES: tuple[SourceName, ...] = ("akshare",)
 
 _SOURCES_PROVIDER: _Provider[tuple[SourceName, ...]] = _Provider()
 _CACHE_PROVIDER: _Provider[_FileCache | None] = _Provider()
+
+
+def _now_iso() -> str:
+    """Return the current wall-clock time in Asia/Shanghai as ISO 8601.
+
+    Format: ``YYYY-MM-DDTHH:MM:SS+08:00`` (seconds precision, fixed
+    +08:00 offset, no microseconds). Used to stamp ``fetched_at`` in
+    the structured snapshot output.
+    """
+    return _dt.datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
+
+
+def _json_default(obj: object) -> object:
+    """Default hook for ``json.dumps`` to serialize non-JSON-native types.
+
+    Handles:
+      - ``datetime.date`` / ``datetime.datetime`` → ISO 8601 string
+      - ``numpy.generic`` (numpy scalar types) → Python scalar via ``.item()``
+
+    Raises:
+        TypeError: with a message identifying the offending type, so
+            cache writes surface serialization bugs immediately.
+    """
+    if isinstance(obj, _dt.date):
+        return obj.isoformat()
+    if isinstance(obj, _dt.datetime):
+        return obj.isoformat()
+    # numpy scalar types (numpy.float64, numpy.int64, etc.)
+    if hasattr(obj, "item") and callable(obj.item):
+        try:
+            return obj.item()
+        except (ValueError, TypeError):
+            pass
+    raise TypeError(f"object of type {type(obj).__name__} is not JSON serializable")
 
 
 def _translate(symbol: str) -> dict[SourceName, str]:
