@@ -33,7 +33,7 @@ _DEFAULT_PROMPT_TEMPLATE: str = """\
 
 你必须:
 1. 调用 get_stock_snapshot 工具,参数 symbol="{symbol}",获取实时行情(必做)。
-2. 视需要调用 web_search 补充近期新闻/公告/分析师观点。
+2. {web_search_clause}
 3. 整合两类信息,产生**严格 JSON**,匹配下面的 schema:
    {{
      "symbol": "{symbol}",
@@ -49,12 +49,30 @@ _DEFAULT_PROMPT_TEMPLATE: str = """\
 """
 
 
-def _build_default_prompt(symbol: str, include_peers: bool) -> str:
-    """Render the default Chinese system prompt for the given symbol and include_peers flag."""
+_WEB_SEARCH_ENABLED_CLAUSE: str = (
+    "视需要调用 web_search 补充近期新闻/公告/分析师观点。"
+)
+_WEB_SEARCH_DISABLED_CLAUSE: str = (
+    "**没有 web_search 工具**(搜索引擎被屏蔽/不可用)。仅依靠 "
+    "get_stock_snapshot 的数据 + 你自己的训练知识,不要尝试调用 web_search,"
+    "news 字段若无法补充就写 'N/A'。"
+)
+
+
+def _build_default_prompt(
+    symbol: str, include_peers: bool, include_web_search: bool
+) -> str:
+    """Render the default Chinese system prompt for the given symbol and flags."""
     include_clause = "include_peers 为 True" if include_peers else "include_peers 为 False"
+    web_search_clause = (
+        _WEB_SEARCH_ENABLED_CLAUSE
+        if include_web_search
+        else _WEB_SEARCH_DISABLED_CLAUSE
+    )
     return _DEFAULT_PROMPT_TEMPLATE.format(
         symbol=symbol,
         include_clause=include_clause,
+        web_search_clause=web_search_clause,
     )
 
 
@@ -80,6 +98,7 @@ class StockAnalysisAgent(BaseAgent):
         symbol: str,
         include_peers: bool = True,
         peer_count: int = 2,
+        include_web_search: bool = True,
         site_list: Sequence[str] | None = None,
         cache_dir: str | Path | None = None,
         cache_ttl: float | None = DEFAULT_CACHE_TTL,
@@ -93,8 +112,8 @@ class StockAnalysisAgent(BaseAgent):
         resolved_sites: list[str] = (
             list(site_list) if site_list is not None else list(DEFAULT_SITE_LIST)
         )
-        if not resolved_sites:
-            raise ValueError("site_list cannot be empty")
+        if include_web_search and not resolved_sites:
+            raise ValueError("site_list cannot be empty when web_search is enabled")
 
         resolved_dir = (
             Path(cache_dir).expanduser().resolve()
@@ -106,27 +125,36 @@ class StockAnalysisAgent(BaseAgent):
         self._symbol = symbol
         self._include_peers = include_peers
         self._peer_count = peer_count
+        self._include_web_search = include_web_search
 
         # Single-instance provider writes — both @tool callables read
         # these via .get() on each invocation. ``market_data`` and
         # ``web_search`` each declare their own ``_CACHE_PROVIDER`` (they
         # are different module-level singletons), so we have to write to
         # both. Collapsing them into one shared singleton is a follow-up.
+        # When ``include_web_search`` is False, skip the web_search providers
+        # entirely so the LLM cannot accidentally call a half-initialized
+        # _web_search.
         _SOURCES_PROVIDER.value = ALL_SOURCES
         _MD_CACHE_PROVIDER.value = self._cache
-        _WS_CACHE_PROVIDER.value = self._cache
-        _SITE_LIST_PROVIDER.value = resolved_sites
+        if include_web_search:
+            _WS_CACHE_PROVIDER.value = self._cache
+            _SITE_LIST_PROVIDER.value = resolved_sites
 
         resolved_prompt = (
             system_prompt
             if system_prompt is not None
-            else _build_default_prompt(symbol, include_peers)
+            else _build_default_prompt(symbol, include_peers, include_web_search)
         )
+
+        tools = [_get_stock_snapshot]
+        if include_web_search:
+            tools.append(_web_search)
 
         super().__init__(
             system_prompt=resolved_prompt,
             max_retries=max_retries,
-            tools=[_get_stock_snapshot, _web_search],
+            tools=tools,
             **kwargs,
         )
 
@@ -141,6 +169,10 @@ class StockAnalysisAgent(BaseAgent):
     @property
     def peer_count(self) -> int:
         return self._peer_count
+
+    @property
+    def include_web_search(self) -> bool:
+        return self._include_web_search
 
 
 __all__ = ["StockAnalysisAgent"]

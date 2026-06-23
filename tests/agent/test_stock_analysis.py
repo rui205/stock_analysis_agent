@@ -69,3 +69,71 @@ def test_underlying_tool_objects_match_module_references() -> None:
     tool_objs = list(agent.tools)
     assert _get_stock_snapshot in tool_objs
     assert _web_search in tool_objs
+
+
+def test_include_web_search_false_omits_web_search_from_tools() -> None:
+    """When ``include_web_search=False``, the agent must not expose web_search."""
+    agent = StockAnalysisAgent(symbol="02319.HK", include_web_search=False)  # noqa: F841
+    tool_names = {t.name for t in agent.tools}
+    assert "get_stock_snapshot" in tool_names
+    assert "web_search" not in tool_names
+
+
+def test_include_web_search_false_does_not_initialize_web_search_providers() -> None:
+    """The web_search providers stay uninitialized when web_search is off.
+
+    This guarantees that, if the LLM somehow called the tool, it would
+    raise a clear RuntimeError ("provider not initialized") instead of
+    silently making HTTP calls.
+    """
+    # Snapshot baseline: web_search providers start unset.
+    saved_sites = _SITE_LIST_PROVIDER.value
+    saved_ws_cache = _WS_CACHE_PROVIDER.value
+    _SITE_LIST_PROVIDER.value = None
+    _WS_CACHE_PROVIDER.value = None
+    try:
+        StockAnalysisAgent(symbol="02319.HK", include_web_search=False)
+        assert _SITE_LIST_PROVIDER.value is None
+        assert _WS_CACHE_PROVIDER.value is None
+    finally:
+        _SITE_LIST_PROVIDER.value = saved_sites
+        _WS_CACHE_PROVIDER.value = saved_ws_cache
+
+
+def test_default_system_prompt_reflects_include_web_search_false() -> None:
+    """The default prompt must explicitly tell the LLM web_search is unavailable."""
+    agent = StockAnalysisAgent(symbol="02319.HK", include_web_search=False)
+    prompt = agent.system_prompt_value
+    assert "没有 web_search 工具" in prompt
+    assert "视需要调用 web_search" not in prompt
+
+
+def test_default_system_prompt_reflects_include_web_search_true() -> None:
+    """The default prompt must include the 'use web_search' clause by default."""
+    agent = StockAnalysisAgent(symbol="02319.HK", include_web_search=True)
+    prompt = agent.system_prompt_value
+    assert "视需要调用 web_search" in prompt
+    assert "没有 web_search 工具" not in prompt
+
+
+def test_include_web_search_property() -> None:
+    """The agent exposes its ``include_web_search`` flag as a property."""
+    a_on = StockAnalysisAgent(symbol="02319.HK", include_web_search=True)
+    a_off = StockAnalysisAgent(symbol="02319.HK", include_web_search=False)
+    assert a_on.include_web_search is True
+    assert a_off.include_web_search is False
+
+
+def test_include_web_search_false_with_empty_site_list_does_not_raise() -> None:
+    """``site_list`` is unused when web_search is off, so an empty list is fine.
+
+    The default constructor rejects ``site_list=[]`` because web_search
+    is on by default; with web_search disabled, the rejection must not
+    fire.
+    """
+    agent = StockAnalysisAgent(  # noqa: F841
+        symbol="02319.HK",
+        include_web_search=False,
+        site_list=[],
+    )
+    assert "web_search" not in {t.name for t in agent.tools}
