@@ -18,6 +18,7 @@ from stock_analysis_agent.tools.market_data import (
     _SOURCES_PROVIDER,
     _get_stock_snapshot,
 )
+from stock_analysis_agent.tools.skill import load_skill
 from stock_analysis_agent.tools.web_search import (
     _CACHE_PROVIDER as _WS_CACHE_PROVIDER,
     _SITE_LIST_PROVIDER,
@@ -39,8 +40,11 @@ _DEFAULT_PROMPT_TEMPLATE: str = """\
      - 每个源要么 {{"data": <row dict>, "row_index": int}} 要么 {{"error": {{...}}}}
    在 fundamentals / technicals / peer_compare 字段里引用数据时,标注来源
    (例如 "tushare 报 PE=11.03")。
-2. {web_search_clause}
-3. 整合两类信息,产生**严格 JSON**,匹配下面的 schema:
+2. 当用户要求"公司画像"/"股票快照"/"格式化输出"/"七段式"等结构化报告时,先
+   调用 load_skill 工具,参数 name="stock-snapshot-format",加载格式化规则,
+   再按规则组织输出(若用户只要 JSON schema,跳过此步)。
+3. {web_search_clause}
+4. 整合两类信息,产生**严格 JSON**,匹配下面的 schema:
    {{
      "symbol": "{symbol}",
      "summary": "<100~200 字总体观点>",
@@ -51,7 +55,7 @@ _DEFAULT_PROMPT_TEMPLATE: str = """\
      "risks": "<主要风险点,1~3 条>",
      "recommendation": "<明确操作建议:关注/观望/减仓,1 句>"
    }}
-4. 输出**只**包含这一个 JSON,不要 markdown 代码块、不要解释、不要多余文字。
+5. 输出**只**包含这一个 JSON,不要 markdown 代码块、不要解释、不要多余文字。
 """
 
 
@@ -153,7 +157,7 @@ class StockAnalysisAgent(BaseAgent):
             else _build_default_prompt(symbol, include_peers, include_web_search)
         )
 
-        tools = [_get_stock_snapshot]
+        tools = [_get_stock_snapshot, load_skill]
         if include_web_search:
             tools.append(_web_search)
 

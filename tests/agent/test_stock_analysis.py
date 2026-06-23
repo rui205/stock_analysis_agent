@@ -139,6 +139,28 @@ def test_include_web_search_false_with_empty_site_list_does_not_raise() -> None:
     assert "web_search" not in {t.name for t in agent.tools}
 
 
+def test_load_skill_is_always_in_tools() -> None:
+    """The load_skill tool is exposed regardless of web_search setting.
+
+    Skill loading is a core capability of the agent (independent of
+    network access), so it must be available even when web_search is off.
+    """
+    a_on = StockAnalysisAgent(symbol="02319.HK", include_web_search=True)
+    a_off = StockAnalysisAgent(symbol="02319.HK", include_web_search=False)
+    assert "load_skill" in {t.name for t in a_on.tools}
+    assert "load_skill" in {t.name for t in a_off.tools}
+
+
+def test_default_system_prompt_mentions_load_skill() -> None:
+    """The default prompt must tell the LLM when to call load_skill."""
+    agent = StockAnalysisAgent(symbol="02319.HK")
+    prompt = agent.system_prompt_value
+    assert "load_skill" in prompt
+    assert "stock-snapshot-format" in prompt
+    # The hint should mention the structured-report keywords that trigger loading.
+    assert "公司画像" in prompt or "格式化" in prompt
+
+
 def test_default_system_prompt_explains_structured_tool_output() -> None:
     """The default prompt must describe the structured JSON shape returned
     by get_stock_snapshot so the LLM knows how to read per-source data."""
