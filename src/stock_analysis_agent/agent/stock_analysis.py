@@ -33,6 +33,12 @@ _DEFAULT_PROMPT_TEMPLATE: str = """\
 
 你必须:
 1. 调用 get_stock_snapshot 工具,参数 symbol="{symbol}",获取实时行情(必做)。
+   返回值是结构化 JSON:
+     - 顶层键: <symbol>、可选 peers、fetched_at
+     - <symbol> 下面有 tushare / akshare / mootdx 三个数据源
+     - 每个源要么 {{"data": <row dict>, "row_index": int}} 要么 {{"error": {{...}}}}
+   在 fundamentals / technicals / peer_compare 字段里引用数据时,标注来源
+   (例如 "tushare 报 PE=11.03")。
 2. {web_search_clause}
 3. 整合两类信息,产生**严格 JSON**,匹配下面的 schema:
    {{
