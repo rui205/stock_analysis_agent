@@ -123,6 +123,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="How many peers to compare (default 2).",
     )
     parser.add_argument(
+        "--no-web-search", dest="include_web_search", action="store_false",
+        default=True,
+        help="Disable the web_search tool (useful when search engines block the "
+             "scraper). Analysis relies on get_stock_snapshot + LLM knowledge only.",
+    )
+    parser.add_argument(
         "--lark-bin", default=os.environ.get("LARK_CLI_BIN", "lark-cli"),
         help="Path / name of the lark-cli binary (default: $LARK_CLI_BIN or 'lark-cli').",
     )
@@ -176,6 +182,7 @@ def run(args: argparse.Namespace) -> int:
         symbol=args.symbol,
         include_peers=args.include_peers,
         peer_count=args.peer_count,
+        include_web_search=args.include_web_search,
     )
 
     # 2. Stream.
