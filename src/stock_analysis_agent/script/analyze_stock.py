@@ -16,6 +16,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import time
@@ -62,6 +63,24 @@ def output_dir() -> Path:
     return _project_root() / _OUTPUT_DIR_NAME
 
 
+#: Absolute path to the bundled system prompt template. Resolved at import time
+#: so ``run()`` does no extra IO just to locate the file. The file lives at
+#: ``src/<package>/prompts/system_prompt.md`` — one level above this script.
+_PROMPT_FILE: Path = Path(__file__).resolve().parents[1] / "prompts" / "system_prompt.md"
+
+
+#: Prompt fragments injected into ``{web_search_clause}``. These clauses are
+#: owned by the script because they are an artefact of the bundled
+#: ``system_prompt.md`` template — the agent itself is schema-agnostic and
+#: does not know about web_search policy.
+_WEB_SEARCH_ENABLED_CLAUSE: str = "视需要调用 web_search 补充近期新闻/公告/分析师观点。"
+_WEB_SEARCH_DISABLED_CLAUSE: str = (
+    "**没有 web_search 工具**(搜索引擎被屏蔽/不可用)。仅依靠 "
+    "get_stock_snapshot 的数据 + 你自己的训练知识,不要尝试调用 web_search,"
+    "news 字段若无法补充就写 'N/A'。"
+)
+
+
 # ---------------------------------------------------------------------------
 # Helpers — pure functions, exported for testability.
 # ---------------------------------------------------------------------------
@@ -87,35 +106,216 @@ def _strip_code_fence(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _extract_json_object(text: str) -> str:
+    """Return the longest balanced JSON object in ``text``.
+
+    The LLM sometimes:
+
+    * appends prose after the JSON (e.g. "如有需要可继续追问…"), or
+    * emits a short summary object first, then the full answer (e.g. a
+      bare ``Verdict`` followed by the complete ``StockAnalysis``), or
+    * wraps the answer in code fences (handled separately by
+      :func:`_strip_code_fence`).
+
+    We greedily collect every parseable JSON object via
+    :meth:`json.JSONDecoder.raw_decode` (which respects string escaping and
+    nested braces) and return the **longest** one. The full ``StockAnalysis``
+    is always longer than any sub-object (``Verdict``, ``PricePlan``, …),
+    so this picks the answer over a teaser.
+
+    Raises:
+        ValueError: if no balanced JSON object can be found in ``text``.
+    """
+    decoder = json.JSONDecoder()
+    candidates: list[str] = []
+    idx = 0
+    while True:
+        start = text.find("{", idx)
+        if start < 0:
+            break
+        try:
+            _, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            idx = start + 1
+            continue
+        candidates.append(text[start:end])
+        idx = end
+    if not candidates:
+        raise ValueError("no JSON object found in agent output")
+    return max(candidates, key=len)
+
+
+def _load_system_prompt(
+    symbol: str, include_peers: bool, include_web_search: bool
+) -> str:
+    """Load the system prompt from ``prompts/system_prompt.md`` with the
+    three template variables filled in.
+
+    The bundled template declares ``{symbol}``, ``{include_clause}`` and
+    ``{web_search_clause}``. ``include_clause`` describes whether the
+    snapshot should include peer data; ``web_search_clause`` tells the
+    LLM whether the ``web_search`` tool is available. Both shapes match
+    the constants used by ``agent.stock_analysis``'s built-in prompt so
+    the LLM-facing instruction is consistent across both code paths.
+
+    Raises:
+        FileNotFoundError: if the bundled ``system_prompt.md`` is missing
+            (e.g. the wheel was mis-built and excluded it).
+    """
+    include_clause = "include_peers 为 True" if include_peers else "include_peers 为 False"
+    web_search_clause = (
+        _WEB_SEARCH_ENABLED_CLAUSE
+        if include_web_search
+        else _WEB_SEARCH_DISABLED_CLAUSE
+    )
+    template = _PROMPT_FILE.read_text(encoding="utf-8")
+    return template.format(
+        symbol=symbol,
+        include_clause=include_clause,
+        web_search_clause=web_search_clause,
+    )
+
+
 def render_markdown(a: StockAnalysis) -> str:
-    """Render a :class:`StockAnalysis` to a Markdown string."""
+    """Render a :class:`StockAnalysis` to a Markdown string.
+
+    Section order mirrors the structure of :class:`StockAnalysis`:
+
+    1. Title + timestamp
+    2. Verdict (the headline decision + confidence + one-liner)
+    3. Price plan (table of current / entry / add / target / stop)
+    4. Scores (compact list of 0-10 ratings)
+    5. Company profile (the 七段式 text)
+    6. Fundamental analysis (highlights / concerns)
+    7. Technical analysis (highlights / concerns)
+    8. News catalysts
+    9. Peer compare
+    10. Risks (table of type / description / severity)
+    11. Action plan (position size, execution steps, review triggers)
+    12. Reasoning chain (long form, kept as a blockquote)
+    """
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    pp = a.price_plan
+    sc = a.scores
+
+    verdict_badge = f"**{a.verdict.decision_label}** (decision={a.verdict.decision}, confidence={a.verdict.confidence})"
+
+    price_table = "\n".join(
+        [
+            "| 项目 | 数值 |",
+            "| --- | --- |",
+            f"| 当前价 | {pp.current_price} |",
+            f"| 建仓区间 | {pp.entry_zone[0]} ~ {pp.entry_zone[1]} |",
+            f"| 加仓区间 | {pp.add_zone[0]} ~ {pp.add_zone[1]} |",
+            f"| 目标价 | {pp.target_price} |",
+            f"| 硬止损 | {pp.stop_loss} |",
+            f"| 预期收益 | {pp.expected_return} |",
+            f"| 风险收益比 | {pp.risk_reward_ratio} |",
+            f"| 持仓周期 | {pp.time_horizon} |",
+        ]
+    )
+
+    score_list = "\n".join(
+        [
+            f"- 基本面: {sc.fundamental}",
+            f"- 技术面: {sc.technical}",
+            f"- 消息面: {sc.news_catalyst}",
+            f"- 同行对比: {sc.peer_positioning}",
+            f"- **加权总分: {sc.weighted_total}**",
+        ]
+    )
+
+    def _dim_section(heading: str, dim) -> str:
+        lines = [f"## {heading}", ""]
+        lines.append("**亮点**")
+        if dim.highlights:
+            for h in dim.highlights:
+                lines.append(f"- {h}")
+        else:
+            lines.append("- (无)")
+        lines.append("")
+        lines.append("**隐忧**")
+        if dim.concerns:
+            for c in dim.concerns:
+                lines.append(f"- {c}")
+        else:
+            lines.append("- (无)")
+        lines.append("")
+        return "\n".join(lines)
+
+    risks_table = "\n".join(
+        [
+            "| 类型 | 严重度 | 描述 |",
+            "| --- | --- | --- |",
+            *(
+                f"| {r.type} | {r.severity} | {r.description} |"
+                for r in a.risks
+            ),
+        ]
+    ) if a.risks else "_无_"
+
+    action_lines = [
+        f"- **仓位建议**: {a.action_plan.position_size}",
+    ]
+    if a.action_plan.execution:
+        action_lines.append("- **执行步骤**:")
+        action_lines.extend(f"  - {e}" for e in a.action_plan.execution)
+    if a.action_plan.review_triggers:
+        action_lines.append("- **复核触发条件**:")
+        action_lines.extend(f"  - {t}" for t in a.action_plan.review_triggers)
+    action_block = "\n".join(action_lines)
+
+    news_block = (
+        "\n".join(f"- {n}" for n in a.news_catalysts)
+        if a.news_catalysts
+        else "_无_"
+    )
+
     return "\n".join(
         [
             f"# {a.symbol} 分析报告",
             "",
             f"> 生成时间: {ts}",
             "",
-            "## 总体观点",
-            a.summary,
+            "## 投资决策",
             "",
-            "## 基本面",
-            a.fundamentals,
+            verdict_badge,
             "",
-            "## 技术面",
-            a.technicals,
+            f"> {a.verdict.summary}",
+            "",
+            "## 价位推算",
+            "",
+            price_table,
+            "",
+            "## 评分",
+            "",
+            score_list,
+            "",
+            "## 公司画像",
+            "",
+            a.company_profile,
+            "",
+            _dim_section("基本面分析", a.fundamental_analysis),
+            _dim_section("技术面分析", a.technical_analysis),
+            "## 近期催化",
+            "",
+            news_block,
             "",
             "## 同行对比",
+            "",
             a.peer_compare,
             "",
-            "## 近期新闻",
-            a.news,
-            "",
             "## 风险",
-            a.risks,
+            "",
+            risks_table,
             "",
             "## 操作建议",
-            a.recommendation,
+            "",
+            action_block,
+            "",
+            "## 推理链",
+            "",
+            f"> {a.reasoning_chain}",
             "",
         ]
     )
@@ -210,12 +410,21 @@ def run(args: argparse.Namespace) -> int:
     Split out from ``main`` so tests can drive it with a constructed
     ``argparse.Namespace`` and monkeypatched ``StockAnalysisAgent``.
     """
-    # 1. Build agent.
+    # 1. Build agent. The system prompt is loaded from the bundled
+    # ``prompts/system_prompt.md``. ``StockAnalysisAgent`` is a
+    # schema-agnostic low-level agent, so the script (not the agent) owns
+    # the output contract.
+    system_prompt = _load_system_prompt(
+        symbol=args.symbol,
+        include_peers=args.include_peers,
+        include_web_search=args.include_web_search,
+    )
     agent = StockAnalysisAgent(
         symbol=args.symbol,
         include_peers=args.include_peers,
         peer_count=args.peer_count,
         include_web_search=args.include_web_search,
+        system_prompt=system_prompt,
     )
 
     # 2. Stream.
@@ -248,13 +457,19 @@ def run(args: argparse.Namespace) -> int:
         logger.error("agent emitted no final text")
         return EXIT_PARSE
 
-    # 3. Strip code fence + validate JSON.
+    # 3. Strip code fence + extract JSON object + validate.
     cleaned = _strip_code_fence(last_text)
     try:
-        analysis = StockAnalysis.model_validate_json(cleaned)
+        json_text = _extract_json_object(cleaned)
+    except ValueError as e:
+        logger.error("could not locate a JSON object in agent output: %s", e)
+        logger.error("raw output (first 500 chars): %s", cleaned[:500])
+        return EXIT_PARSE
+    try:
+        analysis = StockAnalysis.model_validate_json(json_text)
     except ValidationError as e:
         logger.error("agent output is not a valid StockAnalysis JSON: %s", e)
-        logger.error("raw output (first 500 chars): %s", cleaned[:500])
+        logger.error("raw output (first 500 chars): %s", json_text[:500])
         return EXIT_PARSE
 
     # 4. Render Markdown + write to <project-root>/output/.
