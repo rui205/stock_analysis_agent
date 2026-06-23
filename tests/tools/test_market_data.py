@@ -164,16 +164,15 @@ class TestFetchTushare:
 
 
 class TestFetchAkshare:
-    """_fetch_akshare(code) -> str using sina-backed akshare endpoints."""
+    """_fetch_akshare(code) -> dict: {"data", "row_index"} or {"error"}."""
 
     @pytest.mark.asyncio
-    async def test_fetch_akshare_hk_happy_path_with_mocked_ak(
+    async def test_fetch_akshare_hk_happy_path_returns_full_sina_row(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """For an HK code, _fetch_akshare calls stock_hk_spot (sina
-        backend) and renders 中文名称 (not 名称 — that's the eastmoney
-        column). Sina HK payload has no PE/PB/总市值 — those must NOT
-        appear in the output."""
+        """For an HK code, _fetch_akshare calls stock_hk_spot (sina) and
+        returns the matching row's FULL dict (every sina column preserved,
+        no field filtering). NaN values become None."""
         import akshare as ak
         import pandas as pd
 
@@ -192,35 +191,32 @@ class TestFetchAkshare:
                     "最低": 15.34,
                     "成交量": 17684472,
                     "成交额": 278092437.74,
+                    "市盈率": float("nan"),  # NaN must become None in output
                 }
             ]
         )
 
         monkeypatch.setattr(ak, "stock_hk_spot", lambda: fake_spot)
 
-        from stock_analysis_agent.tools import market_data as md
-
         result = await md._fetch_akshare("02319")
-        assert "[akshare]" in result
-        assert "蒙牛乳业" in result
-        # 15.89 is the raw value; the helper formats to .3f.
-        assert "15.890" in result
-        # Sina HK payload does not contain PE/PB/总市值.
-        assert "PE" not in result
-        assert "PB" not in result
-        assert "总市值" not in result
-        # English name (英文名称) must not leak into the rendered text.
-        assert "MENGNIU DAIRY" not in result
-        # Currency unit must be HKD for HK.
-        assert "HKD" in result
+        assert "data" in result
+        assert result["row_index"] == 0
+        d = result["data"]
+        # Every sina column must be preserved.
+        assert d["代码"] == "02319"
+        assert d["中文名称"] == "蒙牛乳业"
+        assert d["英文名称"] == "MENGNIU DAIRY"  # no longer stripped
+        assert d["最新价"] == 15.89
+        assert d["涨跌幅"] == 2.06
+        # NaN becomes None (JSON-safe).
+        assert d["市盈率"] is None
 
     @pytest.mark.asyncio
-    async def test_fetch_akshare_a_share_happy_path_with_mocked_ak(
+    async def test_fetch_akshare_a_share_happy_path_returns_full_sina_row(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """For an A-share code, _fetch_akshare calls stock_zh_a_spot
-        (sina backend) and renders 名称 (not 中文名称). The A-share sina
-        payload has no PE/PB/总市值 either."""
+        """For an A-share code, _fetch_akshare calls stock_zh_a_spot (sina)
+        and returns the full row dict."""
         import akshare as ak
         import pandas as pd
 
@@ -244,23 +240,37 @@ class TestFetchAkshare:
 
         monkeypatch.setattr(ak, "stock_zh_a_spot", lambda: fake_spot)
 
-        from stock_analysis_agent.tools import market_data as md
-
         result = await md._fetch_akshare("sh600887")
-        assert "[akshare]" in result
-        assert "伊利股份" in result
-        assert "24.530" in result
-        # A-share sina payload has no PE/PB/总市值.
-        assert "PE" not in result
-        assert "PB" not in result
-        assert "总市值" not in result
-        # Currency unit must be CNY for A-share.
-        assert "CNY" in result
+        assert "data" in result
+        assert result["row_index"] == 0
+        d = result["data"]
+        assert d["代码"] == "sh600887"
+        assert d["名称"] == "伊利股份"
+        assert d["最新价"] == 24.53
 
     @pytest.mark.asyncio
-    async def test_fetch_akshare_returns_error_segment_on_failure(
+    async def test_fetch_akshare_returns_error_when_code_not_found(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """When the spot DataFrame doesn't contain our code, return {"error": ...}."""
+        import akshare as ak
+        import pandas as pd
+
+        fake_spot = pd.DataFrame(
+            [{"代码": "00000", "名称": "不存在", "最新价": 0.0}]
+        )
+        monkeypatch.setattr(ak, "stock_hk_spot", lambda: fake_spot)
+
+        result = await md._fetch_akshare("02319")
+        assert "error" in result
+        assert result["error"]["type"] == "AkshareCodeNotFound"
+        assert "02319" in result["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_fetch_akshare_returns_error_on_exception(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When akshare raises, return {"error": {"type": <ExcType>, ...}}."""
         import akshare as ak
 
         def _boom() -> None:
@@ -268,11 +278,10 @@ class TestFetchAkshare:
 
         monkeypatch.setattr(ak, "stock_hk_spot", _boom)
 
-        from stock_analysis_agent.tools import market_data as md
-
         result = await md._fetch_akshare("02319")
-        assert "[akshare]" in result
-        assert "[error:" in result
+        assert "error" in result
+        assert result["error"]["type"] == "RuntimeError"
+        assert "akshare down" in result["error"]["message"]
 
 
 class TestFetchMootdx:

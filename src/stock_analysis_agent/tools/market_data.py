@@ -283,80 +283,67 @@ async def _fetch_tushare(
     return {"data": merged, "row_index": 0}
 
 
-async def _fetch_akshare(code: str) -> str:
+async def _fetch_akshare(code: str) -> dict[str, Any]:
     """Fetch an AKShare snapshot for `code` using the Sina backend.
 
     For HK codes (e.g. ``"02319"``) uses ``stock_hk_spot``.
     For SH/SZ codes uses ``stock_zh_a_spot`` and filters by code.
 
-    The Sina-backed endpoints are reachable when the eastmoney proxy
-    used by ``*_em`` functions is blocked. They expose price / OHLCV
-    only; PE / PB / market-cap are not in the sina payload and are
-    omitted from the rendered text. Use tushare for fundamentals.
-
-    The blocking SDK calls are wrapped in ``asyncio.to_thread`` so the
-    event loop is not stalled.
+    Returns the matching row's full dict (every sina column preserved,
+    NaN values replaced with None) — no field filtering.
 
     Args:
         code: AKShare-local code, e.g. ``"02319"`` (HK) or
             ``"sh600519"`` / ``"sz000001"`` (A-share).
 
     Returns:
-        A text snippet prefixed with ``[akshare]``, or
-        ``[akshare]\n[error: ...]`` on failure or empty result.
+        One of:
+          - ``{"data": <row dict>, "row_index": 0}`` on success
+          - ``{"error": {"type": str, "message": str}}`` on failure
+
+        Error types:
+          - ``"AkshareEmpty"`` when spot returns empty
+          - ``"AkshareCodeNotFound"`` when the code is not in spot data
+          - ``<ExceptionClassName>`` for any other raised exception
     """
-    import asyncio
-
     import akshare as ak
-    import pandas as pd
 
-    def _fetch() -> tuple[pd.DataFrame, str, str]:
+    def _fetch() -> tuple[Any, str]:
         # Heuristic: HK codes are 5-digit plain numbers;
         # A-share codes come prefixed with sh/sz from _translate.
         if code.isdigit() and len(code) == 5:
-            return ak.stock_hk_spot(), "中文名称", "HKD"
-        return ak.stock_zh_a_spot(), "名称", "CNY"
+            return ak.stock_hk_spot(), "中文名称"
+        return ak.stock_zh_a_spot(), "名称"
 
     try:
-        df, name_col, ccy = await asyncio.to_thread(_fetch)
+        df, _name_col = await asyncio.to_thread(_fetch)
     except Exception as e:
-        return f"[akshare]\n[error: {type(e).__name__}: {e}]\n"
+        return {
+            "error": {
+                "type": type(e).__name__,
+                "message": str(e),
+            }
+        }
 
     if df is None or df.empty:
-        return f"[akshare]\n[error: empty result for {code}]\n"
+        return {
+            "error": {
+                "type": "AkshareEmpty",
+                "message": f"empty result for {code}",
+            }
+        }
 
-    # Find the row matching our code. Sina A-share spot data keeps the
-    # `sh`/`sz`/`bj` prefix in the `代码` column (e.g. `sh600887`), and
-    # HK spot data uses bare 5-digit codes (e.g. `02319`). The input
-    # `code` from `_translate` already follows the right format for
-    # each market, so a direct equality match works.
     match = df[df["代码"].astype(str) == code]
     if match.empty:
-        return f"[akshare]\n[error: {code} not found in spot data]\n"
-    row = match.iloc[0].to_dict()
+        return {
+            "error": {
+                "type": "AkshareCodeNotFound",
+                "message": f"{code} not found in spot data",
+            }
+        }
 
-    def _g(key: str) -> str:
-        v = row.get(key, "--")
-        return "--" if v in (None, "", float("nan")) else str(v)
-
-    def _price(key: str) -> str:
-        v = _g(key)
-        if v == "--":
-            return "--"
-        try:
-            return f"{float(v):.3f}"
-        except ValueError:
-            return v
-
-    return (
-        "[akshare]\n"
-        f"名称: {_g(name_col)}\n"
-        f"现价: {_price('最新价')}\n"
-        f"涨跌: {_g('涨跌额')} ({_g('涨跌幅')}%)\n"
-        f"今开: {_g('今开')}  昨收: {_g('昨收')}  "
-        f"最高: {_g('最高')}  最低: {_g('最低')}\n"
-        f"成交量: {_g('成交量')}  成交额: {_g('成交额')} {ccy}\n"
-    )
+    row_dict = {k: _noneify(v) for k, v in match.iloc[0].to_dict().items()}
+    return {"data": row_dict, "row_index": 0}
 
 
 async def _fetch_mootdx(market: str, symbol: str) -> str:
