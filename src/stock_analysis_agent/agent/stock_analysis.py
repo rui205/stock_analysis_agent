@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from stock_analysis_agent.agent.base import BaseAgent
+from stock_analysis_agent.agent.deepsearch import (
+    DEFAULT_CACHE_DIR,
+    DEFAULT_CACHE_TTL,
+    DEFAULT_SITE_LIST,
+)
 from stock_analysis_agent.memory.file_cache import _FileCache
 from stock_analysis_agent.tools.market_data import (
     ALL_SOURCES,
@@ -18,17 +23,8 @@ from stock_analysis_agent.tools.web_search import (
     _web_search,
 )
 
-# Re-use the default site list defined in deepsearch.py so a freshly-
-# constructed StockAnalysisAgent has a sensible web_search target without
-# the caller having to supply one.
-_DEFAULT_SITE_LIST: list[str] = [
-    "https://duckduckgo.com/html/",
-    "https://www.bing.com/search",
-    "https://html.duckduckgo.com/html/",
-]
-
-DEFAULT_CACHE_DIR: str = "~/.cache/stock-analysis-agent"
-DEFAULT_CACHE_TTL: float | None = 86400.0  # 24h
+# Defaults (site list, cache dir, cache ttl) are imported from
+# ``agent.deepsearch`` so a single source of truth governs both agents.
 
 
 _DEFAULT_PROMPT_TEMPLATE: str = """\
@@ -53,8 +49,7 @@ _DEFAULT_PROMPT_TEMPLATE: str = """\
 
 
 def _build_default_prompt(symbol: str, include_peers: bool) -> str:
-    """Fill the template. ``include_clause`` is a Chinese phrase so the
-    rendered prompt reads naturally to the LLM."""
+    """Render the default Chinese system prompt for the given symbol and include_peers flag."""
     include_clause = "include_peers 为 True" if include_peers else "include_peers 为 False"
     return _DEFAULT_PROMPT_TEMPLATE.format(
         symbol=symbol,
@@ -95,7 +90,7 @@ class StockAnalysisAgent(BaseAgent):
             raise ValueError("symbol cannot be empty")
 
         resolved_sites: list[str] = (
-            list(site_list) if site_list is not None else list(_DEFAULT_SITE_LIST)
+            list(site_list) if site_list is not None else list(DEFAULT_SITE_LIST)
         )
         if not resolved_sites:
             raise ValueError("site_list cannot be empty")

@@ -61,7 +61,7 @@ def test_custom_system_prompt_overrides_default() -> None:
     assert agent.system_prompt_value == "hello world"
 
 
-def test_underyling_tool_objects_match_module_references() -> None:
+def test_underlying_tool_objects_match_module_references() -> None:
     """The two tools must be the same objects the @tool decorators exported."""
     agent = StockAnalysisAgent(symbol="02319.HK")
     tool_objs = list(agent.tools)
