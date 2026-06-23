@@ -21,12 +21,14 @@
 project/
 ├── src/<package>/      # 主包(src 布局)
 │   ├── mcp/            # MCP server 实现(Model Context Protocol)
+│   ├── web/            # HTTP 接口(FastAPI / Starlette 路由、请求/响应 schema)
 │   ├── tools/          # 工具函数(LangChain @tool / 通用工具)
 │   ├── agent/          # Agent 类 + middleware(LLM 驱动的 agent)
 │   ├── script/         # 脚本入口(CLI / 一次性脚本)
 │   ├── conf/           # 配置(pydantic-settings / yaml / toml)
 │   ├── memory/         # 长期记忆 / 状态持久化(cache、向量存储等)
 │   ├── prompts/        # prompt 模板(系统 prompt、few-shot 等)
+│   ├── skill/          # 项目级 skill 定义(供 AI Agent 加载的 SKILL.md / 子目录)
 │   └── __init__.py     # 显式 __all__
 ├── tests/              # 测试,镜像 <package>/ 结构
 ├── docs/               # 设计文档 / spec / plan
@@ -39,12 +41,21 @@ project/
 ### 子目录职责
 
 - `mcp/` — MCP server 入口,暴露给 Claude / 其他 LLM 客户端的资源与工具。
+- `web/` — HTTP 接口(FastAPI / Starlette router、request/response pydantic schema、依赖注入、依赖的服务)。与 `mcp/` 平行但面向通用 HTTP 客户端(浏览器、其他后端服务),不是 LLM 协议。
 - `tools/` — 无状态工具(纯函数 / LangChain `@tool`),可被 agent 调用。
 - `agent/` — Agent 类与配套 middleware,每个子类一个文件(如 `agent/deepsearch.py`)。
 - `script/` — CLI 入口或一次性脚本(用 `python -m <package>.script.xxx` 运行)。
 - `conf/` — 配置加载(`pydantic-settings` / `BaseSettings`),**不允许 hardcode**。
 - `memory/` — 长期记忆 / 状态持久化(cache、conversation history、向量存储等)。
 - `prompts/` — prompt 模板文件(`.md` / `.txt`),按用途命名,代码里读文件加载。
+- `skill/` — 项目级 skill 定义(供 AI Agent 加载的约定/参考文档)。约定:
+  - 每个 skill 一个子目录,如 `src/<package>/skill/<skill-name>/SKILL.md`。
+  - `SKILL.md` 是入口文档(描述 skill 的用途、触发条件、关键约定)。
+  - skill 子目录内可放 `references/`、`examples/`、`assets/` 等辅助文件。
+  - skill 是**文档而非 Python 代码**,子目录里**不需要** `__init__.py`,内部也不应被业务代码 `import`。
+  - 顶层 `src/<package>/skill/` 不放 `__init__.py`(保持为数据目录)。
+  - 若不希望随 wheel 打包,在 `pyproject.toml` 的 `[tool.hatch.build.targets.wheel]` 用 `exclude` 排除。
+  - **不要**把 skill 文件散落在根目录、`docs/`、`tests/` 下,统一进 `src/<package>/skill/`。
 
 ### 强制项
 
@@ -208,5 +219,6 @@ pytest -k "关键字" -v           # 跑某类
 
 ## 版本
 
+- v1.2 — 新增 `src/<package>/web/`(HTTP 接口)与 `src/<package>/skill/`(项目级 skill 定义)约定
 - v1.1 — 保留 src 布局,在包内新增 mcp/tools/agent/script/conf/memory/prompts 分层约定
 - v1.0 — 初版,通用 Python 工程约束
