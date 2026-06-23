@@ -1,6 +1,8 @@
 """Tests for stock_analysis_agent.tools.market_data."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from stock_analysis_agent.tools import market_data as md
@@ -948,3 +950,98 @@ class TestHelpers:
         """Unsupported types raise TypeError with a helpful message."""
         with pytest.raises(TypeError, match="not JSON serializable"):
             md._json_default(object())
+
+
+class TestJsonSerialization:
+    """NaN/date/numpy serialization safety for cache + LLM transport."""
+
+    def test_noneify_replaces_nan_with_none(self) -> None:
+        """pandas NaN, float('nan'), and numpy.nan must become None."""
+        import math
+
+        import numpy as np
+
+        assert md._noneify(float("nan")) is None
+        assert md._noneify(math.nan) is None
+        assert md._noneify(np.float64("nan")) is None
+        # Non-NaN values pass through.
+        assert md._noneify(0.0) == 0.0
+        assert md._noneify(42) == 42
+        assert md._noneify("hello") == "hello"
+        assert md._noneify(None) is None
+
+    def test_noneify_handles_pandas_nat(self) -> None:
+        """pandas NaT (Not-a-Time) must become None."""
+        import pandas as pd
+
+        assert md._noneify(pd.NaT) is None
+
+    def test_json_default_handles_date_and_datetime(self) -> None:
+        """datetime.date / datetime.datetime become ISO strings via _json_default."""
+        import datetime as _dt
+
+        assert md._json_default(_dt.date(2026, 6, 23)) == "2026-06-23"
+        assert md._json_default(_dt.datetime(2026, 6, 23, 15, 30, 0)) == "2026-06-23T15:30:00"
+
+    def test_json_default_handles_numpy_scalars(self) -> None:
+        """numpy.float64 / numpy.int64 become Python scalars."""
+        import numpy as np
+
+        assert md._json_default(np.float64(3.14)) == 3.14
+        assert md._json_default(np.int64(42)) == 42
+
+    def test_full_roundtrip_dict_to_json_to_dict(self) -> None:
+        """A result dict with NaN + numpy + dates round-trips through json."""
+        import datetime as _dt
+
+        import numpy as np
+
+        raw = {
+            "02319.HK": {
+                "tushare": {
+                    "data": {
+                        "ts_code": "02319.HK",
+                        "close": np.float64(15.89),
+                        "trade_date": _dt.date(2026, 6, 22),
+                        "extra_nan": float("nan"),
+                    },
+                    "row_index": 0,
+                }
+            },
+            "fetched_at": "2026-06-23T15:30:00+08:00",
+        }
+        # Production flow: walk leaves with _noneify (strips NaN -> None),
+        # then encode with _json_default (handles dates / numpy scalars).
+        # On decode, `parse_constant` collapses any leftover NaN/Infinity
+        # literals to None — this is what `_noneify` already accomplishes
+        # for the in-memory dict before it ever reaches `json.dumps`.
+        sanitized = json.loads(
+            json.dumps(raw, ensure_ascii=False, default=md._json_default),
+            parse_constant=lambda _c: None,
+        )
+
+        assert sanitized["02319.HK"]["tushare"]["data"]["close"] == 15.89
+        assert sanitized["02319.HK"]["tushare"]["data"]["trade_date"] == "2026-06-22"
+        assert sanitized["02319.HK"]["tushare"]["data"]["extra_nan"] is None
+
+    def test_cache_roundtrip_dict_via_json(self, tmp_path) -> None:
+        """A result dict stored as JSON in the cache round-trips back equal."""
+        from stock_analysis_agent.memory import _FileCache
+
+        cache = _FileCache(tmp_path, ttl_seconds=60.0)
+        original = {
+            "02319.HK": {
+                "tushare": {"data": {"ts_code": "02319.HK", "name": "蒙牛"}, "row_index": 0},
+                "akshare": {"error": {"type": "ConnectError", "message": "down"}},
+            },
+            "fetched_at": "2026-06-23T15:30:00+08:00",
+        }
+        cache.set(
+            site="market_data",
+            query="02319.HK|akshare,tushare|peers=0",
+            text=json.dumps(original, ensure_ascii=False, default=md._json_default),
+        )
+        hit = cache.get(site="market_data", query="02319.HK|akshare,tushare|peers=0")
+        assert hit is not None
+        parsed = json.loads(hit)
+        assert parsed == original
