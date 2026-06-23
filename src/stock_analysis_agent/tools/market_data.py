@@ -677,9 +677,9 @@ async def _get_stock_snapshot(
     sources: list[str] | None = None,
     include_peers: bool = True,
     peer_count: int = 2,
-) -> str:
+) -> dict[str, Any]:
     """Fetch a comprehensive stock snapshot from multiple Chinese-market
-    data sources and return aggregated text.
+    data sources and return a structured nested dict.
 
     Args:
         symbol: Standard code in '<code>.<market>' format, e.g.
@@ -695,10 +695,15 @@ async def _get_stock_snapshot(
             Only meaningful when include_peers=True. Range: 0..10.
 
     Returns:
-        Plain-text aggregation of snippets from each source, each
-        prefixed with `[source-name]`. Failed sources are recorded as
-        `[error: ...]` segments. The `[peers]` section appears at the
-        end when include_peers=True and peer lookup succeeded.
+        A nested dict with these top-level keys:
+          - ``<symbol>`` → per-source ``{"data", "row_index"}`` blocks
+            (or ``{"error": {"type", "message"}}`` for failed sources)
+          - ``fetched_at`` → ISO 8601 timestamp string
+          - ``peers`` (only when ``include_peers=True``) → dict keyed by
+            peer symbol, with one nested ``akshare`` block per peer
+
+        LangChain's ``@tool`` machinery serializes this dict to JSON
+        before handing it to the LLM.
     """
     resolved_sources: tuple[SourceName, ...]
     if not sources:

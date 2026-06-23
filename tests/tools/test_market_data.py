@@ -857,7 +857,7 @@ class TestFetchAndConcat:
 
 
 class TestGetStockSnapshotTool:
-    """The @tool _get_stock_snapshot wrapper."""
+    """The @tool _get_stock_snapshot wrapper returns dict, not str."""
 
     def test_tool_name_is_get_stock_snapshot(self) -> None:
         assert md._get_stock_snapshot.name == "get_stock_snapshot"
@@ -874,18 +874,30 @@ class TestGetStockSnapshotTool:
         assert "symbol" in properties
         assert "sources" in properties
 
+    def test_tool_return_annotation_is_dict(self) -> None:
+        """The tool's annotated return type must be dict (not str)."""
+        import typing
+        coroutine = md._get_stock_snapshot.coroutine  # type: ignore[attr-defined]
+        hints = typing.get_type_hints(coroutine)
+        ret = hints.get("return")
+        # Annotation is `dict[str, Any]` — check origin is dict, not bare match.
+        assert typing.get_origin(ret) is dict, (
+            f"expected dict origin, got {ret!r}"
+        )
+
     @pytest.mark.asyncio
-    async def test_tool_invokes_aggregator_and_returns_aggregated_text(
-        self, tmp_path
-    ) -> None:
-        """End-to-end: tool.ainvoke calls the aggregator and returns text."""
+    async def test_tool_invokes_aggregator_and_returns_dict(self, tmp_path) -> None:
+        """End-to-end: tool.ainvoke calls the aggregator and returns a dict."""
         from stock_analysis_agent.memory import _FileCache
 
         async def _fake_concat(symbol, **kwargs):  # type: ignore[no-untyped-def]
-            return (
-                f"[tushare]\n{symbol}-tushare\n"
-                f"[akshare]\n{symbol}-akshare\n"
-            )
+            return {
+                symbol: {
+                    "tushare": {"data": {"ts_code": symbol}, "row_index": 0},
+                    "akshare": {"data": {"代码": "02319"}, "row_index": 0},
+                },
+                "fetched_at": "2026-06-23T15:30:00+08:00",
+            }
 
         original = md._fetch_and_concat
         md._fetch_and_concat = _fake_concat  # type: ignore[assignment]
@@ -901,9 +913,10 @@ class TestGetStockSnapshotTool:
             md._CACHE_PROVIDER.value = None
             md._SOURCES_PROVIDER.value = None
 
-        assert "[tushare]" in result
-        assert "[akshare]" in result
-        assert "02319.HK-tushare" in result
+        assert isinstance(result, dict)
+        assert "02319.HK" in result
+        assert result["02319.HK"]["tushare"]["data"]["ts_code"] == "02319.HK"
+        assert "fetched_at" in result
 
 
 class TestHelpers:
