@@ -1,7 +1,6 @@
 """Tests for stock_analysis_agent.tools.market_data."""
 from __future__ import annotations
 
-import httpx
 import pytest
 
 from stock_analysis_agent.tools import market_data as md
@@ -14,8 +13,6 @@ class TestTranslate:
     def test_translate_hk_symbol_to_all_sources(self) -> None:
         result = _translate("02319.HK")
         assert result == {
-            "sina": "rt_hk02319",
-            "tencent": "hk02319",
             "tushare": "02319.HK",
             "akshare": "02319",
             "mootdx": "23",
@@ -25,8 +22,6 @@ class TestTranslate:
     def test_translate_sh_symbol_to_all_sources(self) -> None:
         result = _translate("600519.SH")
         assert result == {
-            "sina": "sh600519",
-            "tencent": "sh600519",
             "tushare": "600519.SH",
             "akshare": "sh600519",
             "mootdx": "1",
@@ -36,8 +31,6 @@ class TestTranslate:
     def test_translate_sz_symbol_to_all_sources(self) -> None:
         result = _translate("000001.SZ")
         assert result == {
-            "sina": "sz000001",
-            "tencent": "sz000001",
             "tushare": "000001.SZ",
             "akshare": "sz000001",
             "mootdx": "0",
@@ -47,158 +40,6 @@ class TestTranslate:
     def test_translate_unknown_market_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="unsupported market"):
             _translate("02319.XX")
-
-
-class TestFetchSina:
-    """_fetch_sina(code) -> str using httpx against hq.sinajs.cn."""
-
-    @pytest.mark.asyncio
-    async def test_fetch_sina_parses_hk_quote(self) -> None:
-        """Mock the httpx response with the real Sina HK payload (verbatim
-        curl capture) and assert the HK branch renders the verified
-        field indices without leaking the English name or misrouting
-        to the A-share branch."""
-        sample_csv = (
-            'var hq_str_rt_hk02319="MENGNIU DAIRY,蒙牛乳业,15.890,15.890,'
-            "16.250,15.890,16.010,0.120,0.755,16.000,16.010,"
-            "111674874.580,6948592,36.427,0.000,17.411,13.374,"
-            '2026/06/23,11:35:34,100|0,N|Y,Y,16.000|15.250|16.500,'
-            "0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,..."
-            '";'
-        )
-
-        def _h(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, text=sample_csv)
-
-        result = await md._fetch_sina(
-            "rt_hk02319",
-            transport=httpx.MockTransport(_h),
-        )
-        # Header marks this as the sina source.
-        assert "[sina]" in result
-        # Real HK payload values must render with strict formatting.
-        assert "名称: 蒙牛乳业" in result
-        assert "现价: 16.010" in result
-        assert "涨跌: +0.120 (+0.76%)" in result
-        assert "今开: 15.890" in result
-        assert "昨收: 15.890" in result
-        assert "最高: 16.250" in result
-        assert "最低: 15.890" in result
-        assert "成交量: 6948592 股" in result
-        assert "成交额: 111674874.580 HKD" in result
-        assert "PE: 17.411" in result
-        assert "PB: 13.374" in result
-        # English name (fields[0]) must NOT leak into the output — the
-        # HK branch should prefer fields[1] (Chinese name).
-        assert "MENGNIU DAIRY" not in result
-
-    @pytest.mark.asyncio
-    async def test_fetch_sina_parses_a_share_quote(self) -> None:
-        """Mock the httpx response with a real Sina A-share payload
-        (sh600887, ~33 fields — NOT a short fixture) and assert the
-        A-share branch handles it. The previous `len(fields) >= 32`
-        heuristic wrongly routed this to the HK branch."""
-        sample_csv = (
-            'var hq_str_sh600887="伊利股份,24.560,24.630,24.530,25.110,'
-            '24.510,24.530,24.540,35784473,886842735.000,16516,24.530,'
-            "24.520,24.540,24.500,24.560,1718.320,5.720,"
-            '2026/06/23,11:35:34,0,0,0,0,0,0,0,0,0,0,0,0,...";'
-        )
-
-        def _h(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, text=sample_csv)
-
-        result = await md._fetch_sina(
-            "sh600887",
-            transport=httpx.MockTransport(_h),
-        )
-        # Header marks this as the sina source.
-        assert "[sina]" in result
-        # A-share branch should render the real payload values.
-        assert "名称: 伊利股份" in result
-        assert "现价: 24.530" in result
-        # change/change_pct are computed (not in the basic A-share payload):
-        # 24.530 - 24.630 = -0.100; -0.100 / 24.630 * 100 = -0.4060...%
-        assert "涨跌: -0.100 (-0.41%)" in result
-        assert "今开: 24.560" in result
-        assert "昨收: 24.630" in result
-        assert "最高: 25.110" in result
-        assert "最低: 24.510" in result
-        assert "成交量: 35784473 股" in result
-        assert "成交额: 886842735.000 CNY" in result
-        # A-share payload does not contain PE/PB; those lines must not
-        # leak from the HK branch.
-        assert "PE:" not in result
-        assert "PB:" not in result
-        # MENGNIU is from the HK fixture and must not leak.
-        assert "MENGNIU" not in result
-
-    @pytest.mark.asyncio
-    async def test_fetch_sina_returns_error_segment_on_http_failure(self) -> None:
-        """If httpx raises, _fetch_sina returns '[error: ...]' segment,
-        not raising."""
-
-        def _h(request: httpx.Request) -> httpx.Response:
-            raise httpx.ConnectError("boom")
-
-        result = await md._fetch_sina(
-            "rt_hk02319",
-            transport=httpx.MockTransport(_h),
-        )
-        assert "[error:" in result
-        assert "[sina]" in result
-
-
-class TestFetchTencent:
-    """_fetch_tencent(code) -> str using httpx against qt.gtimg.cn."""
-
-    @pytest.mark.asyncio
-    async def test_fetch_tencent_parses_hk_quote(self) -> None:
-        """Mock the httpx response, assert _fetch_tencent returns a
-        snippet with the parsed price/PE fields."""
-        sample = (
-            'v_hk02319="100~蒙牛股份~02319~15.890~15.570~15.940~'
-            "17684472.0~0~0~15.890~0~0~0~0~0~0~0~0~0~15.890~0~0~0~0~0~0~0~0~0~"
-            "17684472.0~2026/06/22 16:08:17~0.320~2.06~15.940~15.340~15.890~"
-            '17684472.0~278092437.740~0~36.00~~0~0~3.85~615.9721~615.9721~'
-            'MENGNIU DAIRY~3.76~17.472~13.282~1.08~-96.57~0~0~0~0~0~36.00~'
-            '1.38~0.46~1000~11.03~-4.33~GP~3.81~1.68~3.91~-5.71~1.78~'
-            '3876476513.00~3876476513.00~36.00~0.598~15.725~10.03~HKD~1~50";'
-        )
-
-        def _h(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, text=sample)
-
-        result = await md._fetch_tencent(
-            "hk02319",
-            transport=httpx.MockTransport(_h),
-        )
-        assert "[tencent]" in result
-        # Strict assertions: change/change_pct/high/low/PE-TTM/PB must
-        # render with their verified values, not the off-by-one
-        # neighbors from fields[32..35,46,49].
-        assert "涨跌: +0.320 (+2.06%)" in result
-        assert "最高: 15.940" in result
-        assert "最低: 15.340" in result
-        assert "PE-TTM: 17.472" in result
-        assert "PB: 13.282" in result
-        # fields[1] is the CN name and must be present.
-        assert "蒙牛股份" in result
-        # fields[46] is the English name and must NOT leak into the
-        # output (the buggy parser was rendering it as PB).
-        assert "MENGNIU DAIRY" not in result
-
-    @pytest.mark.asyncio
-    async def test_fetch_tencent_returns_error_segment_on_http_failure(self) -> None:
-        def _h(request: httpx.Request) -> httpx.Response:
-            raise httpx.ConnectError("boom")
-
-        result = await md._fetch_tencent(
-            "hk02319",
-            transport=httpx.MockTransport(_h),
-        )
-        assert "[error:" in result
-        assert "[tencent]" in result
 
 
 class TestFetchTushare:
@@ -276,14 +117,16 @@ class TestFetchTushare:
 
 
 class TestFetchAkshare:
-    """_fetch_akshare(code) -> str using akshare."""
+    """_fetch_akshare(code) -> str using sina-backed akshare endpoints."""
 
     @pytest.mark.asyncio
-    async def test_fetch_akshare_happy_path_with_mocked_ak(
+    async def test_fetch_akshare_hk_happy_path_with_mocked_ak(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Monkeypatch the specific akshare functions we use, assert
-        the output contains price and PE fields."""
+        """For an HK code, _fetch_akshare calls stock_hk_spot (sina
+        backend) and renders 中文名称 (not 名称 — that's the eastmoney
+        column). Sina HK payload has no PE/PB/总市值 — those must NOT
+        appear in the output."""
         import akshare as ak
         import pandas as pd
 
@@ -291,34 +134,81 @@ class TestFetchAkshare:
             [
                 {
                     "代码": "02319",
-                    "名称": "蒙牛乳业",
+                    "中文名称": "蒙牛乳业",
+                    "英文名称": "MENGNIU DAIRY",
                     "最新价": 15.89,
                     "涨跌额": 0.32,
                     "涨跌幅": 2.06,
-                    "今开": 15.57,
                     "昨收": 15.57,
+                    "今开": 15.57,
                     "最高": 15.94,
                     "最低": 15.34,
                     "成交量": 17684472,
                     "成交额": 278092437.74,
-                    "市盈率": 11.03,
-                    "市净率": 1.68,
-                    "总市值": 387647651300,
                 }
             ]
         )
 
-        monkeypatch.setattr(
-            ak, "stock_hk_spot_em", lambda: fake_spot
-        )
+        monkeypatch.setattr(ak, "stock_hk_spot", lambda: fake_spot)
 
         from stock_analysis_agent.tools import market_data as md
 
         result = await md._fetch_akshare("02319")
         assert "[akshare]" in result
-        assert "15.890" in result
         assert "蒙牛乳业" in result
-        assert "PE" in result
+        # 15.89 is the raw value; the helper formats to .3f.
+        assert "15.890" in result
+        # Sina HK payload does not contain PE/PB/总市值.
+        assert "PE" not in result
+        assert "PB" not in result
+        assert "总市值" not in result
+        # English name (英文名称) must not leak into the rendered text.
+        assert "MENGNIU DAIRY" not in result
+        # Currency unit must be HKD for HK.
+        assert "HKD" in result
+
+    @pytest.mark.asyncio
+    async def test_fetch_akshare_a_share_happy_path_with_mocked_ak(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """For an A-share code, _fetch_akshare calls stock_zh_a_spot
+        (sina backend) and renders 名称 (not 中文名称). The A-share sina
+        payload has no PE/PB/总市值 either."""
+        import akshare as ak
+        import pandas as pd
+
+        fake_spot = pd.DataFrame(
+            [
+                {
+                    "代码": "sh600887",
+                    "名称": "伊利股份",
+                    "最新价": 24.53,
+                    "涨跌额": -0.10,
+                    "涨跌幅": -0.41,
+                    "昨收": 24.63,
+                    "今开": 24.56,
+                    "最高": 25.11,
+                    "最低": 24.51,
+                    "成交量": 35784473,
+                    "成交额": 886842735.0,
+                }
+            ]
+        )
+
+        monkeypatch.setattr(ak, "stock_zh_a_spot", lambda: fake_spot)
+
+        from stock_analysis_agent.tools import market_data as md
+
+        result = await md._fetch_akshare("sh600887")
+        assert "[akshare]" in result
+        assert "伊利股份" in result
+        assert "24.530" in result
+        # A-share sina payload has no PE/PB/总市值.
+        assert "PE" not in result
+        assert "PB" not in result
+        assert "总市值" not in result
+        # Currency unit must be CNY for A-share.
+        assert "CNY" in result
 
     @pytest.mark.asyncio
     async def test_fetch_akshare_returns_error_segment_on_failure(
@@ -329,7 +219,7 @@ class TestFetchAkshare:
         def _boom() -> None:
             raise RuntimeError("akshare down")
 
-        monkeypatch.setattr(ak, "stock_hk_spot_em", _boom)
+        monkeypatch.setattr(ak, "stock_hk_spot", _boom)
 
         from stock_analysis_agent.tools import market_data as md
 
@@ -511,43 +401,43 @@ class TestFetchAndConcat:
 
         from stock_analysis_agent.tools import market_data as md
 
-        async def _slow_sina(*args, **kwargs):  # type: ignore[no-untyped-def]
-            await asyncio.sleep(0.1)
-            return "[sina]\nok\n"
-
-        async def _slow_tencent(*args, **kwargs):  # type: ignore[no-untyped-def]
-            await asyncio.sleep(0.1)
-            return "[tencent]\nok\n"
-
         async def _slow_tushare(*args, **kwargs):  # type: ignore[no-untyped-def]
             await asyncio.sleep(0.1)
             return "[tushare]\nok\n"
 
-        original_sina = md._fetch_sina
-        original_tencent = md._fetch_tencent
+        async def _slow_akshare(*args, **kwargs):  # type: ignore[no-untyped-def]
+            await asyncio.sleep(0.1)
+            return "[akshare]\nok\n"
+
+        async def _slow_mootdx(*args, **kwargs):  # type: ignore[no-untyped-def]
+            await asyncio.sleep(0.1)
+            return "[mootdx]\nok\n"
+
         original_tushare = md._fetch_tushare
-        md._fetch_sina = _slow_sina  # type: ignore[assignment]
-        md._fetch_tencent = _slow_tencent  # type: ignore[assignment]
+        original_akshare = md._fetch_akshare
+        original_mootdx = md._fetch_mootdx
         md._fetch_tushare = _slow_tushare  # type: ignore[assignment]
+        md._fetch_akshare = _slow_akshare  # type: ignore[assignment]
+        md._fetch_mootdx = _slow_mootdx  # type: ignore[assignment]
         try:
             start = time.monotonic()
             result = await md._fetch_and_concat(
                 "02319.HK",
-                sources=("sina", "tencent", "tushare"),
+                sources=("tushare", "akshare", "mootdx"),
                 include_peers=False,
                 peer_count=0,
                 cache=None,
             )
             elapsed = time.monotonic() - start
         finally:
-            md._fetch_sina = original_sina  # type: ignore[assignment]
-            md._fetch_tencent = original_tencent  # type: ignore[assignment]
             md._fetch_tushare = original_tushare  # type: ignore[assignment]
+            md._fetch_akshare = original_akshare  # type: ignore[assignment]
+            md._fetch_mootdx = original_mootdx  # type: ignore[assignment]
 
         assert elapsed < 0.25, f"expected parallel, took {elapsed:.3f}s"
-        assert "[sina]" in result
-        assert "[tencent]" in result
         assert "[tushare]" in result
+        assert "[akshare]" in result
+        assert "[mootdx]" in result
 
     @pytest.mark.asyncio
     async def test_concat_partial_failure_does_not_raise(self) -> None:
@@ -555,36 +445,36 @@ class TestFetchAndConcat:
         from stock_analysis_agent.tools import market_data as md
 
         async def _ok(*args, **kwargs):  # type: ignore[no-untyped-def]
-            return "[sina]\nok\n"
-
-        async def _boom(*args, **kwargs):  # type: ignore[no-untyped-def]
-            return "[tencent]\n[error: ConnectError: nope]\n"
-
-        async def _ok2(*args, **kwargs):  # type: ignore[no-untyped-def]
             return "[tushare]\nok\n"
 
-        original_sina = md._fetch_sina
-        original_tencent = md._fetch_tencent
+        async def _boom(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return "[akshare]\n[error: ConnectError: nope]\n"
+
+        async def _ok2(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return "[mootdx]\nok\n"
+
         original_tushare = md._fetch_tushare
-        md._fetch_sina = _ok  # type: ignore[assignment]
-        md._fetch_tencent = _boom  # type: ignore[assignment]
-        md._fetch_tushare = _ok2  # type: ignore[assignment]
+        original_akshare = md._fetch_akshare
+        original_mootdx = md._fetch_mootdx
+        md._fetch_tushare = _ok  # type: ignore[assignment]
+        md._fetch_akshare = _boom  # type: ignore[assignment]
+        md._fetch_mootdx = _ok2  # type: ignore[assignment]
         try:
             result = await md._fetch_and_concat(
                 "02319.HK",
-                sources=("sina", "tencent", "tushare"),
+                sources=("tushare", "akshare", "mootdx"),
                 include_peers=False,
                 peer_count=0,
                 cache=None,
             )
         finally:
-            md._fetch_sina = original_sina  # type: ignore[assignment]
-            md._fetch_tencent = original_tencent  # type: ignore[assignment]
             md._fetch_tushare = original_tushare  # type: ignore[assignment]
+            md._fetch_akshare = original_akshare  # type: ignore[assignment]
+            md._fetch_mootdx = original_mootdx  # type: ignore[assignment]
 
-        assert "[sina]" in result
         assert "[tushare]" in result
-        assert "[tencent]" in result
+        assert "[mootdx]" in result
+        assert "[akshare]" in result
         assert "[error:" in result
 
     @pytest.mark.asyncio
@@ -594,28 +484,28 @@ class TestFetchAndConcat:
         from stock_analysis_agent.agent.exceptions import ToolExecutionError
         from stock_analysis_agent.tools import market_data as md
 
-        async def _boom(*args, **kwargs):  # type: ignore[no-untyped-def]
-            return "[sina]\n[error: ConnectError: nope]\n"
+        async def _boom1(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return "[tushare]\n[error: ConnectError: nope]\n"
 
         async def _boom2(*args, **kwargs):  # type: ignore[no-untyped-def]
-            return "[tencent]\n[error: ConnectError: nope]\n"
+            return "[akshare]\n[error: ConnectError: nope]\n"
 
-        original_sina = md._fetch_sina
-        original_tencent = md._fetch_tencent
-        md._fetch_sina = _boom  # type: ignore[assignment]
-        md._fetch_tencent = _boom2  # type: ignore[assignment]
+        original_tushare = md._fetch_tushare
+        original_akshare = md._fetch_akshare
+        md._fetch_tushare = _boom1  # type: ignore[assignment]
+        md._fetch_akshare = _boom2  # type: ignore[assignment]
         try:
             with pytest.raises(ToolExecutionError, match="all sources failed"):
                 await md._fetch_and_concat(
                     "02319.HK",
-                    sources=("sina", "tencent"),
+                    sources=("tushare", "akshare"),
                     include_peers=False,
                     peer_count=0,
                     cache=None,
                 )
         finally:
-            md._fetch_sina = original_sina  # type: ignore[assignment]
-            md._fetch_tencent = original_tencent  # type: ignore[assignment]
+            md._fetch_tushare = original_tushare  # type: ignore[assignment]
+            md._fetch_akshare = original_akshare  # type: ignore[assignment]
 
 
 class TestGetStockSnapshotTool:
@@ -645,8 +535,8 @@ class TestGetStockSnapshotTool:
 
         async def _fake_concat(symbol, **kwargs):  # type: ignore[no-untyped-def]
             return (
-                f"[sina]\n{symbol}-sina\n"
-                f"[tencent]\n{symbol}-tencent\n"
+                f"[tushare]\n{symbol}-tushare\n"
+                f"[akshare]\n{symbol}-akshare\n"
             )
 
         original = md._fetch_and_concat
@@ -656,13 +546,13 @@ class TestGetStockSnapshotTool:
         md._SOURCES_PROVIDER.value = md.ALL_SOURCES
         try:
             result = await md._get_stock_snapshot.ainvoke(
-                {"symbol": "02319.HK", "sources": ["sina", "tencent"]}
+                {"symbol": "02319.HK", "sources": ["tushare", "akshare"]}
             )
         finally:
             md._fetch_and_concat = original  # type: ignore[assignment]
             md._CACHE_PROVIDER.value = None
             md._SOURCES_PROVIDER.value = None
 
-        assert "[sina]" in result
-        assert "[tencent]" in result
-        assert "02319.HK-sina" in result
+        assert "[tushare]" in result
+        assert "[akshare]" in result
+        assert "02319.HK-tushare" in result

@@ -1,20 +1,16 @@
-"""@tool get_stock_snapshot: fan-out concurrent stock data over 5 sources."""
+"""@tool get_stock_snapshot: fan-out concurrent stock data over 3 sources."""
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Literal
-
-import httpx
+from typing import Literal
 
 from stock_analysis_agent.memory.file_cache import _FileCache
 from stock_analysis_agent.tools.web_search import _Provider
 
 MarketName = Literal["HK", "SH", "SZ"]
-SourceName = Literal["sina", "tencent", "tushare", "akshare", "mootdx"]
+SourceName = Literal["tushare", "akshare", "mootdx"]
 
 ALL_SOURCES: tuple[SourceName, ...] = (
-    "sina",
-    "tencent",
     "tushare",
     "akshare",
     "mootdx",
@@ -38,7 +34,7 @@ HK_INDUSTRY_HINTS: dict[str, str] = {
 DEFAULT_CACHE_DIR: str = "~/.cache/stock-analysis-agent/market"
 DEFAULT_CACHE_TTL: float = 12 * 3600.0
 PEER_INDUSTRY_SOURCE: SourceName = "akshare"
-PEER_FETCH_SOURCES: tuple[SourceName, ...] = ("sina", "tencent")
+PEER_FETCH_SOURCES: tuple[SourceName, ...] = ("akshare",)
 
 _SOURCES_PROVIDER: _Provider[tuple[SourceName, ...]] = _Provider()
 _CACHE_PROVIDER: _Provider[_FileCache | None] = _Provider()
@@ -73,8 +69,6 @@ def _translate(symbol: str) -> dict[SourceName, str]:
         raise ValueError(f"empty code in symbol: {symbol!r}")
     if market == "HK":
         return {
-            "sina": f"rt_hk{code}",
-            "tencent": f"hk{code}",
             "tushare": f"{code}.HK",
             "akshare": code,
             "mootdx": "23",
@@ -82,8 +76,6 @@ def _translate(symbol: str) -> dict[SourceName, str]:
         }
     if market == "SH":
         return {
-            "sina": f"sh{code}",
-            "tencent": f"sh{code}",
             "tushare": f"{code}.SH",
             "akshare": f"sh{code}",
             "mootdx": "1",
@@ -91,222 +83,11 @@ def _translate(symbol: str) -> dict[SourceName, str]:
         }
     # SZ
     return {
-        "sina": f"sz{code}",
-        "tencent": f"sz{code}",
         "tushare": f"{code}.SZ",
         "akshare": f"sz{code}",
         "mootdx": "0",
         "mootdx_symbol": code.zfill(6),
     }
-
-
-async def _fetch_sina(
-    code: str,
-    *,
-    transport: httpx.AsyncBaseTransport | None = None,
-    timeout: float = 10.0,
-) -> str:
-    """Fetch a Sina realtime quote for `code` and return formatted text.
-
-    Args:
-        code: Sina-local code, e.g. ``"rt_hk02319"``, ``"sh600519"``.
-        transport: Optional httpx transport (for tests).
-        timeout: HTTP timeout in seconds.
-
-    Returns:
-        A text snippet prefixed with ``[sina]`` and the parsed fields,
-        or ``[sina]\n[error: ...]`` on failure.
-    """
-    url = "https://hq.sinajs.cn/list=" + code
-    headers = {
-        "Referer": "https://finance.sina.com.cn/",
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36"
-        ),
-    }
-    try:
-        client_kwargs: dict[str, Any] = {"timeout": timeout}
-        if transport is not None:
-            client_kwargs["transport"] = transport
-        async with httpx.AsyncClient(**client_kwargs) as client:
-            resp = await client.get(url, headers=headers)
-            resp.raise_for_status()
-            body = resp.text
-    except Exception as e:
-        return f"[sina]\n[error: {type(e).__name__}: {e}]\n"
-    return "[sina]\n" + _parse_sina_csv(body) + "\n"
-
-
-def _is_a_share(fields: list[str]) -> bool:
-    """Return True when `fields` follows the A-share CSV layout.
-
-    A-share rows place a numeric open price at fields[1]; HK rows place
-    the Chinese name there (English name at fields[0]). Detecting the
-    layout from field count alone is unreliable because real A-share
-    payloads can have ~33 fields — the same range as HK responses.
-    """
-    try:
-        float(fields[1])
-        return True
-    except (ValueError, IndexError):
-        return False
-
-
-def _parse_sina_csv(body: str) -> str:
-    """Parse a `var hq_str_xxx="...";` response into readable text.
-
-    Sina's payload is GBK-encoded CSV-ish. Field layouts differ between
-    HK and A-share rows and are detected via ``_is_a_share`` (numeric at
-    fields[1] ⇒ A-share, Chinese name there ⇒ HK).
-    """
-    # Extract the quoted portion.
-    start = body.find('"')
-    end = body.rfind('"')
-    if start < 0 or end <= start:
-        return f"[error: unparseable sina response: {body[:80]!r}]"
-    raw = body[start + 1 : end]
-    fields = raw.split(",")
-    if len(fields) < 6:
-        return f"[error: too few fields: {len(fields)}]"
-    if _is_a_share(fields):
-        # A-share layout (verified from real Sina responses):
-        # [0] name_cn, [1] open, [2] prev_close, [3] current, [4] high,
-        # [5] low, [6] bid, [7] ask, [8] volume, [9] amount, [10] trade count.
-        try:
-            name_cn = fields[0]
-            open_p = float(fields[1])
-            prev_close = float(fields[2])
-            current = float(fields[3])
-            high = float(fields[4])
-            low = float(fields[5])
-            volume = fields[8]
-            amount = fields[9]
-            # change / change_pct are not in the basic A-share payload;
-            # derive them so the rendered output stays consistent with HK.
-            change = current - prev_close
-            change_pct = (change / prev_close * 100) if prev_close else 0.0
-            return (
-                f"名称: {name_cn}\n"
-                f"现价: {current:.3f}\n"
-                f"涨跌: {change:+.3f} ({change_pct:+.2f}%)\n"
-                f"今开: {open_p:.3f}  昨收: {prev_close:.3f}  "
-                f"最高: {high:.3f}  最低: {low:.3f}\n"
-                f"成交量: {volume} 股\n"
-                f"成交额: {amount} CNY\n"
-            )
-        except (ValueError, IndexError) as e:
-            return f"[error: parse failed: {e}]"
-    # HK layout (verified from real Sina responses):
-    # [0] name_en, [1] name_cn, [2] open, [3] prev_close, [4] high,
-    # [5] low, [6] current, [7] change, [8] change_pct, [9] bid,
-    # [10] ask, [11] amount (HKD), [12] volume, [13] turnover,
-    # [15] PE, [16] PB.
-    try:
-        name_cn = fields[1] if fields[1] else fields[0]
-        open_p = float(fields[2])
-        prev_close = float(fields[3])
-        current = float(fields[6])
-        high = float(fields[4])
-        low = float(fields[5])
-        change = float(fields[7])
-        change_pct = float(fields[8])
-        volume = fields[12]
-        amount = fields[11]
-        pe = fields[15] if len(fields) > 15 and fields[15] else "--"
-        pb = fields[16] if len(fields) > 16 and fields[16] else "--"
-        return (
-            f"名称: {name_cn}\n"
-            f"现价: {current:.3f}\n"
-            f"涨跌: {change:+.3f} ({change_pct:+.2f}%)\n"
-            f"今开: {open_p:.3f}  昨收: {prev_close:.3f}  "
-            f"最高: {high:.3f}  最低: {low:.3f}\n"
-            f"成交量: {volume} 股\n"
-            f"成交额: {amount} HKD\n"
-            f"PE: {pe}  PB: {pb}\n"
-        )
-    except (ValueError, IndexError) as e:
-        return f"[error: parse failed: {e}]"
-
-
-async def _fetch_tencent(
-    code: str,
-    *,
-    transport: httpx.AsyncBaseTransport | None = None,
-    timeout: float = 10.0,
-) -> str:
-    """Fetch a Tencent realtime quote for `code` and return formatted text.
-
-    Args:
-        code: Tencent-local code, e.g. ``"hk02319"``, ``"sh600519"``.
-        transport: Optional httpx transport (for tests).
-        timeout: HTTP timeout in seconds.
-
-    Returns:
-        A text snippet prefixed with ``[tencent]`` and parsed fields,
-        or ``[tencent]\n[error: ...]`` on failure.
-    """
-    url = "http://qt.gtimg.cn/q=" + code
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36"
-        ),
-    }
-    try:
-        client_kwargs: dict[str, Any] = {"timeout": timeout}
-        if transport is not None:
-            client_kwargs["transport"] = transport
-        async with httpx.AsyncClient(**client_kwargs) as client:
-            resp = await client.get(url, headers=headers)
-            resp.raise_for_status()
-            body = resp.text
-    except Exception as e:
-        return f"[tencent]\n[error: {type(e).__name__}: {e}]\n"
-    return "[tencent]\n" + _parse_tencent_csv(body) + "\n"
-
-
-def _parse_tencent_csv(body: str) -> str:
-    """Parse a `v_<code>="~...";` payload into readable text.
-
-    Field layout (0-indexed after splitting on `~`) for HK shares:
-    1=name_cn, 3=current, 4=prev_close, 5=open, 31=change,
-    32=change_pct, 33=high, 34=low, 36=volume, 37=amount,
-    48=PE-TTM, 49=PB.
-    """
-    start = body.find('"')
-    end = body.rfind('"')
-    if start < 0 or end <= start:
-        return f"[error: unparseable tencent response: {body[:80]!r}]"
-    raw = body[start + 1 : end]
-    fields = raw.split("~")
-    if len(fields) < 50:
-        return f"[error: too few fields: {len(fields)}]"
-    try:
-        name_cn = fields[1]
-        current = float(fields[3])
-        prev_close = float(fields[4])
-        open_p = float(fields[5])
-        change = float(fields[31])
-        change_pct = float(fields[32])
-        high = float(fields[33])
-        low = float(fields[34])
-        volume = fields[36]
-        amount = fields[37]
-        pe_ttm = fields[48] or "--"
-        pb = fields[49] or "--"
-        return (
-            f"名称: {name_cn}\n"
-            f"现价: {current:.3f}\n"
-            f"涨跌: {change:+.3f} ({change_pct:+.2f}%)\n"
-            f"今开: {open_p:.3f}  昨收: {prev_close:.3f}  "
-            f"最高: {high:.3f}  最低: {low:.3f}\n"
-            f"成交量: {volume}\n"
-            f"成交额: {amount}\n"
-            f"PE-TTM: {pe_ttm}  PB: {pb}\n"
-        )
-    except (ValueError, IndexError) as e:
-        return f"[error: parse failed: {e}]"
 
 
 async def _fetch_tushare(
@@ -383,10 +164,15 @@ async def _fetch_tushare(
 
 
 async def _fetch_akshare(code: str) -> str:
-    """Fetch an AKShare snapshot for `code`.
+    """Fetch an AKShare snapshot for `code` using the Sina backend.
 
-    For HK codes (e.g. ``"02319"``) uses ``stock_hk_spot_em``.
-    For SH/SZ codes uses ``stock_zh_a_spot_em`` and filters by code.
+    For HK codes (e.g. ``"02319"``) uses ``stock_hk_spot``.
+    For SH/SZ codes uses ``stock_zh_a_spot`` and filters by code.
+
+    The Sina-backed endpoints are reachable when the eastmoney proxy
+    used by ``*_em`` functions is blocked. They expose price / OHLCV
+    only; PE / PB / market-cap are not in the sina payload and are
+    omitted from the rendered text. Use tushare for fundamentals.
 
     The blocking SDK calls are wrapped in ``asyncio.to_thread`` so the
     event loop is not stalled.
@@ -404,26 +190,29 @@ async def _fetch_akshare(code: str) -> str:
     import akshare as ak
     import pandas as pd
 
-    def _fetch() -> pd.DataFrame:
+    def _fetch() -> tuple[pd.DataFrame, str, str]:
         # Heuristic: HK codes are 5-digit plain numbers;
         # A-share codes come prefixed with sh/sz from _translate.
         if code.isdigit() and len(code) == 5:
-            return ak.stock_hk_spot_em()
-        return ak.stock_zh_a_spot_em()
+            return ak.stock_hk_spot(), "中文名称", "HKD"
+        return ak.stock_zh_a_spot(), "名称", "CNY"
 
     try:
-        df = await asyncio.to_thread(_fetch)
+        df, name_col, ccy = await asyncio.to_thread(_fetch)
     except Exception as e:
         return f"[akshare]\n[error: {type(e).__name__}: {e}]\n"
 
     if df is None or df.empty:
         return f"[akshare]\n[error: empty result for {code}]\n"
 
-    # Find the row matching our code (strip sh/sz prefix if present).
-    needle = code.replace("sh", "").replace("sz", "")
-    match = df[df["代码"].astype(str) == needle]
+    # Find the row matching our code. Sina A-share spot data keeps the
+    # `sh`/`sz`/`bj` prefix in the `代码` column (e.g. `sh600887`), and
+    # HK spot data uses bare 5-digit codes (e.g. `02319`). The input
+    # `code` from `_translate` already follows the right format for
+    # each market, so a direct equality match works.
+    match = df[df["代码"].astype(str) == code]
     if match.empty:
-        return f"[akshare]\n[error: {needle} not found in spot data]\n"
+        return f"[akshare]\n[error: {code} not found in spot data]\n"
     row = match.iloc[0].to_dict()
 
     def _g(key: str) -> str:
@@ -441,14 +230,12 @@ async def _fetch_akshare(code: str) -> str:
 
     return (
         "[akshare]\n"
-        f"名称: {_g('名称')}\n"
+        f"名称: {_g(name_col)}\n"
         f"现价: {_price('最新价')}\n"
         f"涨跌: {_g('涨跌额')} ({_g('涨跌幅')}%)\n"
         f"今开: {_g('今开')}  昨收: {_g('昨收')}  "
         f"最高: {_g('最高')}  最低: {_g('最低')}\n"
-        f"成交量: {_g('成交量')}  成交额: {_g('成交额')}\n"
-        f"PE: {_g('市盈率')}  PB: {_g('市净率')}\n"
-        f"总市值: {_g('总市值')}\n"
+        f"成交量: {_g('成交量')}  成交额: {_g('成交额')} {ccy}\n"
     )
 
 
@@ -525,6 +312,11 @@ def _detect_peers(symbol: str, peer_count: int) -> list[str] | None:
     ``stock_board_industry_cons_em`` to get constituents ranked by
     market cap. For HK symbols (where akshare's individual-info
     endpoint does not classify), falls back to ``HK_INDUSTRY_HINTS``.
+
+    Note: industry / board endpoints are only available via the
+    eastmoney backend (``*_em``) in current akshare; there is no
+    sina-based equivalent. Peer detection will fail when eastmoney
+    is unreachable even though the main quote source is sina-based.
 
     Args:
         symbol: Standard code, e.g. ``"600519.SH"`` or ``"02319.HK"``.
@@ -646,7 +438,7 @@ async def _fetch_and_concat(
       1. Compute composite cache key and short-circuit on hit.
       2. Fan out per-source fetches via ``asyncio.gather``.
       3. If ``include_peers``, detect top-N peers and append a
-         ``[peers]`` section rendered from sina + tencent only.
+         ``[peers]`` section rendered from akshare only.
       4. If every primary source errored, raise ``ToolExecutionError``.
       5. Write the aggregated text to cache (best-effort).
 
@@ -686,10 +478,6 @@ async def _fetch_and_concat(
 
     async def _call(src: SourceName) -> str:
         try:
-            if src == "sina":
-                return await _fetch_sina(translated["sina"])
-            if src == "tencent":
-                return await _fetch_tencent(translated["tencent"])
             if src == "tushare":
                 return await _fetch_tushare(
                     translated["tushare"], token=None
@@ -723,16 +511,14 @@ async def _fetch_and_concat(
             for psym in peer_symbols:
                 try:
                     ptrans = _translate(psym)
-                    sina_text = await _fetch_sina(ptrans["sina"])
-                    tencent_text = await _fetch_tencent(ptrans["tencent"])
+                    peer_text = await _fetch_akshare(ptrans["akshare"])
                 except Exception as e:  # noqa: BLE001
                     peer_lines.append(
                         f"- {psym}: [error: "
                         f"{type(e).__name__}: {e}]"
                     )
                     continue
-                combined = sina_text + tencent_text
-                peer_lines.append(f"- {psym}:\n{combined.strip()}")
+                peer_lines.append(f"- {psym}:\n{peer_text.strip()}")
             parts.append("\n".join(peer_lines) + "\n")
 
     result = "\n".join(parts)
@@ -763,11 +549,12 @@ async def _get_stock_snapshot(
         symbol: Standard code in '<code>.<market>' format, e.g.
             '02319.HK', '600519.SH', '000001.SZ'.
         sources: Optional subset of data sources to query. Allowed
-            values: 'sina', 'tencent', 'tushare', 'akshare', 'mootdx'.
-            None or empty list means query ALL sources configured via
-            the module-level _SOURCES_PROVIDER (typically all five).
+            values: 'tushare', 'akshare', 'mootdx'. None or empty list
+            means query ALL sources configured via the module-level
+            _SOURCES_PROVIDER (typically all three).
         include_peers: If True, also look up the stock's industry and
             fetch the top `peer_count` peer companies for comparison.
+            Peer rendering is done through the akshare source.
         peer_count: How many top peers (by market cap) to include.
             Only meaningful when include_peers=True. Range: 0..10.
 
