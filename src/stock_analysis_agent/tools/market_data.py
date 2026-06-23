@@ -125,6 +125,31 @@ def _json_default(obj: object) -> object:
     raise TypeError(f"object of type {type(obj).__name__} is not JSON serializable")
 
 
+def _noneify(v: object) -> object:
+    """Replace pandas NaN / NaT with ``None`` so the value is JSON-safe.
+
+    Non-pandas scalars are returned unchanged. ``float('nan')`` and
+    ``pandas.NaT`` both compare equal to themselves but not to None,
+    so we use ``pd.isna`` on the pandas side and a float check otherwise.
+    """
+    if v is None:
+        return None
+    # Catch both numpy.nan and float('nan') without importing pandas at module top.
+    try:
+        import math
+        if isinstance(v, float) and math.isnan(v):
+            return None
+    except Exception:
+        pass
+    try:
+        import pandas as pd  # local import keeps the helper lightweight
+        if pd.isna(v):
+            return None
+    except Exception:
+        pass
+    return v
+
+
 def _translate(symbol: str) -> dict[SourceName, str]:
     """Translate a standard `<code>.<market>` symbol into each source's
     native code format.
@@ -179,15 +204,16 @@ async def _fetch_tushare(
     code: str,
     *,
     token: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """Fetch a Tushare snapshot for `code` (e.g. ``"02319.HK"``).
 
-    Uses two endpoints:
+    Calls two endpoints in a single thread hop:
       - ``pro.daily`` for the latest OHLCV
-      - ``pro.stock_basic`` for industry, PE, PB, market cap
+      - ``pro.stock_basic`` for industry / PE / PB / market cap
 
-    The blocking SDK calls are wrapped in ``asyncio.to_thread`` so the
-    event loop is not stalled.
+    Returns the merged dict from both endpoints with no field filtering
+    (raw row data preserved) so downstream consumers can pick which
+    fields to surface.
 
     Args:
         code: Tushare-format ts_code, e.g. ``"02319.HK"``.
@@ -195,16 +221,25 @@ async def _fetch_tushare(
             ``TUSHARE_TOKEN`` environment variable.
 
     Returns:
-        A text snippet prefixed with ``[tushare]``. When the token is
-        missing, returns ``[tushare]\n[error: TUSHARE_TOKEN not set]``
-        so the aggregator can still render other sources.
+        One of:
+          - ``{"data": <merged row dict>, "row_index": 0}`` on success
+          - ``{"error": {"type": str, "message": str}}`` on failure
+
+        Error types:
+          - ``"TushareTokenMissing"`` when ``TUSHARE_TOKEN`` is unset
+          - ``"TushareEmpty"`` when ``stock_basic`` returns no rows
+          - ``<ExceptionClassName>`` for any other raised exception
     """
-    import asyncio
     import os
 
     token = token if token is not None else os.environ.get("TUSHARE_TOKEN")
     if not token:
-        return "[tushare]\n[error: TUSHARE_TOKEN not set]\n"
+        return {
+            "error": {
+                "type": "TushareTokenMissing",
+                "message": "TUSHARE_TOKEN not set",
+            }
+        }
 
     try:
         import tushare as ts
@@ -220,32 +255,32 @@ async def _fetch_tushare(
 
         daily, basic = await asyncio.to_thread(_fetch)
     except Exception as e:
-        return f"[tushare]\n[error: {type(e).__name__}: {e}]\n"
+        return {
+            "error": {
+                "type": type(e).__name__,
+                "message": str(e),
+            }
+        }
 
     if not basic:
-        return f"[tushare]\n[error: stock_basic returned empty for {code}]\n"
-    info = basic[0]
-    lines = [
-        "名称: " + str(info.get("name", "(unknown)")),
-        "行业: " + str(info.get("industry", "--")),
-        "PE: " + str(info.get("pe", "--")),
-        "PB: " + str(info.get("pb", "--")),
-        "总市值(万): " + str(info.get("total_mv", "--")),
-    ]
+        return {
+            "error": {
+                "type": "TushareEmpty",
+                "message": f"stock_basic returned empty for {code}",
+            }
+        }
+
+    # Merge: union of keys from both rows. When keys overlap (only ts_code
+    # in practice), stock_basic wins because it's the more authoritative
+    # source for the symbol identity. NaN -> None for JSON-safe output.
+    merged: dict[str, Any] = {}
     if daily:
-        d = daily[0]
-        lines.insert(
-            0,
-            f"现价: {float(d.get('close', 0)):.3f}  "
-            f"涨跌: {float(d.get('change', 0)):+.3f} "
-            f"({float(d.get('pct_chg', 0)):+.2f}%)\n"
-            f"今开: {float(d.get('open', 0)):.3f}  "
-            f"昨收: {float(d.get('pre_close', 0)):.3f}  "
-            f"最高: {float(d.get('high', 0)):.3f}  "
-            f"最低: {float(d.get('low', 0)):.3f}\n"
-            f"成交量: {d.get('vol')}  成交额: {d.get('amount')}",
-        )
-    return "[tushare]\n" + "\n".join(lines) + "\n"
+        for k, v in daily[0].items():
+            merged[k] = _noneify(v)
+    for k, v in basic[0].items():
+        merged[k] = _noneify(v)
+
+    return {"data": merged, "row_index": 0}
 
 
 async def _fetch_akshare(code: str) -> str:

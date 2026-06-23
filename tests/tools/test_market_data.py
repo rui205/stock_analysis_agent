@@ -43,27 +43,28 @@ class TestTranslate:
 
 
 class TestFetchTushare:
-    """_fetch_tushare(code, token) -> str using tushare.pro_api."""
+    """_fetch_tushare(code, token) -> dict: {"data", "row_index"} or {"error"}."""
 
     @pytest.mark.asyncio
     async def test_fetch_tushare_returns_error_when_token_missing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """No TUSHARE_TOKEN env var -> [tushare]\\n[error: TUSHARE_TOKEN not set]\\n"""
+        """No TUSHARE_TOKEN env var -> {"error": {"type": "TushareTokenMissing", ...}}."""
         monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
 
         result = await md._fetch_tushare("02319.HK", token=None)
-        assert "[tushare]" in result
-        assert "TUSHARE_TOKEN" in result
-        assert "[error:" in result
+        assert "error" in result
+        assert "data" not in result
+        assert result["error"]["type"] == "TushareTokenMissing"
+        assert "TUSHARE_TOKEN" in result["error"]["message"]
 
     @pytest.mark.asyncio
-    async def test_fetch_tushare_happy_path_with_mocked_pro_api(
+    async def test_fetch_tushare_happy_path_returns_dict_with_merged_fields(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When token is set and pro_api is monkeypatched to return fake
-        DataFrames, _fetch_tushare should render a snapshot including
-        price and PE fields."""
+        """When token is set and pro_api returns DataFrames, _fetch_tushare
+        merges the daily + stock_basic rows into one flat dict and wraps it
+        in {"data": ..., "row_index": 0}. No field filtering."""
         import pandas as pd
 
         fake_daily = pd.DataFrame(
@@ -108,12 +109,58 @@ class TestFetchTushare:
         monkeypatch.setattr(ts, "pro_api", lambda token: _FakePro())
 
         result = await md._fetch_tushare("02319.HK", token="dummy")
-        assert "[tushare]" in result
-        assert "15.890" in result
-        assert "涨跌: +0.320 (+2.06%)" in result
-        assert "最高: 15.940" in result
-        assert "最低: 15.340" in result
-        assert "蒙牛乳业" in result or "乳品" in result
+        assert "data" in result
+        assert result["row_index"] == 0
+        d = result["data"]
+        # daily fields preserved
+        assert d["ts_code"] == "02319.HK"
+        assert d["trade_date"] == "20260622"
+        assert float(d["close"]) == 15.89
+        assert float(d["vol"]) == 17684472.0
+        # stock_basic fields merged in
+        assert d["name"] == "蒙牛乳业"
+        assert d["industry"] == "乳品"
+        assert float(d["pe"]) == 11.03
+        assert float(d["total_mv"]) == 387647.0
+
+    @pytest.mark.asyncio
+    async def test_fetch_tushare_returns_error_when_basic_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If stock_basic returns empty, _fetch_tushare returns {"error": ...}."""
+        import pandas as pd
+
+        class _FakePro:
+            def daily(self, **kwargs):  # type: ignore[no-untyped-def]
+                return pd.DataFrame()
+
+            def stock_basic(self, **kwargs):  # type: ignore[no-untyped-def]
+                return pd.DataFrame()
+
+        import tushare as ts
+
+        monkeypatch.setattr(ts, "pro_api", lambda token: _FakePro())
+
+        result = await md._fetch_tushare("02319.HK", token="dummy")
+        assert "error" in result
+        assert result["error"]["type"] == "TushareEmpty"
+
+    @pytest.mark.asyncio
+    async def test_fetch_tushare_returns_error_on_unexpected_exception(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Any exception other than the known paths becomes {"error": {"type": <ExcType>, ...}}."""
+        import tushare as ts
+
+        def _boom(token):  # type: ignore[no-untyped-def]
+            raise RuntimeError("network down")
+
+        monkeypatch.setattr(ts, "pro_api", _boom)
+
+        result = await md._fetch_tushare("02319.HK", token="dummy")
+        assert "error" in result
+        assert result["error"]["type"] == "RuntimeError"
+        assert "network down" in result["error"]["message"]
 
 
 class TestFetchAkshare:
