@@ -5,11 +5,12 @@ from stock_analysis_agent.agent.deepsearch import DEFAULT_SITE_LIST
 from stock_analysis_agent.agent.stock_analysis import StockAnalysisAgent
 from stock_analysis_agent.tools.market_data import (
     ALL_SOURCES,
-    _CACHE_PROVIDER,
+    _CACHE_PROVIDER as _MD_CACHE_PROVIDER,
     _SOURCES_PROVIDER,
     _get_stock_snapshot,
 )
 from stock_analysis_agent.tools.web_search import (
+    _CACHE_PROVIDER as _WS_CACHE_PROVIDER,
     _SITE_LIST_PROVIDER,
     _web_search,
 )
@@ -18,7 +19,8 @@ from stock_analysis_agent.tools.web_search import (
 def test_construction_populates_all_providers() -> None:
     agent = StockAnalysisAgent(symbol="02319.HK")  # noqa: F841
     assert _SOURCES_PROVIDER.get() == ALL_SOURCES
-    assert _CACHE_PROVIDER.get() is not None
+    assert _MD_CACHE_PROVIDER.get() is not None
+    assert _WS_CACHE_PROVIDER.get() is not None
     assert _SITE_LIST_PROVIDER.get() == list(DEFAULT_SITE_LIST)
 
 

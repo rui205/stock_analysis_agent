@@ -14,11 +14,12 @@ from stock_analysis_agent.agent.deepsearch import (
 from stock_analysis_agent.memory.file_cache import _FileCache
 from stock_analysis_agent.tools.market_data import (
     ALL_SOURCES,
-    _CACHE_PROVIDER,
+    _CACHE_PROVIDER as _MD_CACHE_PROVIDER,
     _SOURCES_PROVIDER,
     _get_stock_snapshot,
 )
 from stock_analysis_agent.tools.web_search import (
+    _CACHE_PROVIDER as _WS_CACHE_PROVIDER,
     _SITE_LIST_PROVIDER,
     _web_search,
 )
@@ -107,9 +108,13 @@ class StockAnalysisAgent(BaseAgent):
         self._peer_count = peer_count
 
         # Single-instance provider writes — both @tool callables read
-        # these via .get() on each invocation.
+        # these via .get() on each invocation. ``market_data`` and
+        # ``web_search`` each declare their own ``_CACHE_PROVIDER`` (they
+        # are different module-level singletons), so we have to write to
+        # both. Collapsing them into one shared singleton is a follow-up.
         _SOURCES_PROVIDER.value = ALL_SOURCES
-        _CACHE_PROVIDER.value = self._cache
+        _MD_CACHE_PROVIDER.value = self._cache
+        _WS_CACHE_PROVIDER.value = self._cache
         _SITE_LIST_PROVIDER.value = resolved_sites
 
         resolved_prompt = (
