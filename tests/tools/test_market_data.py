@@ -573,74 +573,23 @@ class TestInstallEmRequestHook:
 
 
 class TestFetchAndConcat:
-    """_fetch_and_concat aggregator + cache behavior."""
+    """_fetch_and_concat aggregator returns nested dict with top-level keys."""
 
     @pytest.mark.asyncio
-    async def test_concat_runs_in_parallel(self) -> None:
-        """3 sources with ~100ms delay each → total < 250ms (parallel)."""
-        import asyncio
-        import time
-
-        from stock_analysis_agent.tools import market_data as md
-
-        async def _slow_tushare(*args, **kwargs):  # type: ignore[no-untyped-def]
-            await asyncio.sleep(0.1)
-            return "[tushare]\nok\n"
-
-        async def _slow_akshare(*args, **kwargs):  # type: ignore[no-untyped-def]
-            await asyncio.sleep(0.1)
-            return "[akshare]\nok\n"
-
-        async def _slow_mootdx(*args, **kwargs):  # type: ignore[no-untyped-def]
-            await asyncio.sleep(0.1)
-            return "[mootdx]\nok\n"
-
-        original_tushare = md._fetch_tushare
-        original_akshare = md._fetch_akshare
-        original_mootdx = md._fetch_mootdx
-        md._fetch_tushare = _slow_tushare  # type: ignore[assignment]
-        md._fetch_akshare = _slow_akshare  # type: ignore[assignment]
-        md._fetch_mootdx = _slow_mootdx  # type: ignore[assignment]
-        try:
-            start = time.monotonic()
-            result = await md._fetch_and_concat(
-                "02319.HK",
-                sources=("tushare", "akshare", "mootdx"),
-                include_peers=False,
-                peer_count=0,
-                cache=None,
-            )
-            elapsed = time.monotonic() - start
-        finally:
-            md._fetch_tushare = original_tushare  # type: ignore[assignment]
-            md._fetch_akshare = original_akshare  # type: ignore[assignment]
-            md._fetch_mootdx = original_mootdx  # type: ignore[assignment]
-
-        assert elapsed < 0.25, f"expected parallel, took {elapsed:.3f}s"
-        assert "[tushare]" in result
-        assert "[akshare]" in result
-        assert "[mootdx]" in result
-
-    @pytest.mark.asyncio
-    async def test_concat_partial_failure_does_not_raise(self) -> None:
-        """If one source fails, others still appear, no exception."""
+    async def test_concat_returns_dict_with_symbol_and_fetched_at(self) -> None:
+        """Result is a dict with <symbol> (containing per-source dicts)
+        and fetched_at (ISO 8601 string)."""
         from stock_analysis_agent.tools import market_data as md
 
         async def _ok(*args, **kwargs):  # type: ignore[no-untyped-def]
-            return "[tushare]\nok\n"
-
-        async def _boom(*args, **kwargs):  # type: ignore[no-untyped-def]
-            return "[akshare]\n[error: ConnectError: nope]\n"
-
-        async def _ok2(*args, **kwargs):  # type: ignore[no-untyped-def]
-            return "[mootdx]\nok\n"
+            return {"data": {"ts_code": "02319.HK", "name": "蒙牛"}, "row_index": 0}
 
         original_tushare = md._fetch_tushare
         original_akshare = md._fetch_akshare
         original_mootdx = md._fetch_mootdx
         md._fetch_tushare = _ok  # type: ignore[assignment]
-        md._fetch_akshare = _boom  # type: ignore[assignment]
-        md._fetch_mootdx = _ok2  # type: ignore[assignment]
+        md._fetch_akshare = _ok  # type: ignore[assignment]
+        md._fetch_mootdx = _ok  # type: ignore[assignment]
         try:
             result = await md._fetch_and_concat(
                 "02319.HK",
@@ -654,23 +603,57 @@ class TestFetchAndConcat:
             md._fetch_akshare = original_akshare  # type: ignore[assignment]
             md._fetch_mootdx = original_mootdx  # type: ignore[assignment]
 
-        assert "[tushare]" in result
-        assert "[mootdx]" in result
-        assert "[akshare]" in result
-        assert "[error:" in result
+        assert isinstance(result, dict)
+        assert "02319.HK" in result
+        assert "fetched_at" in result
+        assert "peers" not in result  # include_peers=False
+        # Per-source dicts present
+        assert "tushare" in result["02319.HK"]
+        assert "akshare" in result["02319.HK"]
+        assert "mootdx" in result["02319.HK"]
+
+    @pytest.mark.asyncio
+    async def test_concat_partial_failure_keeps_working_sources(self) -> None:
+        """If one source errors, others still appear with their data blocks."""
+        from stock_analysis_agent.tools import market_data as md
+
+        async def _ok(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return {"data": {"ts_code": "02319.HK"}, "row_index": 0}
+
+        async def _boom(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return {"error": {"type": "ConnectError", "message": "nope"}}
+
+        original_tushare = md._fetch_tushare
+        original_akshare = md._fetch_akshare
+        md._fetch_tushare = _ok  # type: ignore[assignment]
+        md._fetch_akshare = _boom  # type: ignore[assignment]
+        try:
+            result = await md._fetch_and_concat(
+                "02319.HK",
+                sources=("tushare", "akshare"),
+                include_peers=False,
+                peer_count=0,
+                cache=None,
+            )
+        finally:
+            md._fetch_tushare = original_tushare  # type: ignore[assignment]
+            md._fetch_akshare = original_akshare  # type: ignore[assignment]
+
+        assert "data" in result["02319.HK"]["tushare"]
+        assert "error" in result["02319.HK"]["akshare"]
+        assert result["02319.HK"]["akshare"]["error"]["type"] == "ConnectError"
 
     @pytest.mark.asyncio
     async def test_concat_all_failure_raises_tool_execution_error(self) -> None:
-        """When every source fails, raise ToolExecutionError so the
-        retry middleware can act."""
+        """When every source errors, raise ToolExecutionError so retry middleware can act."""
         from stock_analysis_agent.agent.exceptions import ToolExecutionError
         from stock_analysis_agent.tools import market_data as md
 
         async def _boom1(*args, **kwargs):  # type: ignore[no-untyped-def]
-            return "[tushare]\n[error: ConnectError: nope]\n"
+            return {"error": {"type": "ConnectError", "message": "nope"}}
 
         async def _boom2(*args, **kwargs):  # type: ignore[no-untyped-def]
-            return "[akshare]\n[error: ConnectError: nope]\n"
+            return {"error": {"type": "ConnectError", "message": "nope"}}
 
         original_tushare = md._fetch_tushare
         original_akshare = md._fetch_akshare
@@ -688,6 +671,189 @@ class TestFetchAndConcat:
         finally:
             md._fetch_tushare = original_tushare  # type: ignore[assignment]
             md._fetch_akshare = original_akshare  # type: ignore[assignment]
+
+    @pytest.mark.asyncio
+    async def test_concat_includes_peers_when_enabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When include_peers=True, peers dict appears at top level,
+        keyed by peer symbol, with akshare as the only nested source."""
+        from stock_analysis_agent.tools import market_data as md
+
+        async def _ok(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return {"data": {"代码": "02319"}, "row_index": 0}
+
+        def _fake_detect(symbol: str, peer_count: int) -> list[str]:
+            return ["600887.SH", "600597.SH"]
+
+        monkeypatch.setattr(md, "_fetch_tushare", _ok)
+        monkeypatch.setattr(md, "_fetch_akshare", _ok)
+        monkeypatch.setattr(md, "_fetch_mootdx", _ok)
+        monkeypatch.setattr(md, "_detect_peers", _fake_detect)
+
+        result = await md._fetch_and_concat(
+            "02319.HK",
+            sources=("tushare", "akshare"),
+            include_peers=True,
+            peer_count=2,
+            cache=None,
+        )
+        assert "peers" in result
+        assert "600887.SH" in result["peers"]
+        assert "600597.SH" in result["peers"]
+        # Only akshare populated per peer
+        assert "akshare" in result["peers"]["600887.SH"]
+        assert "tushare" not in result["peers"]["600887.SH"]
+
+    @pytest.mark.asyncio
+    async def test_concat_peers_error_when_detection_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When _detect_peers returns None, peers dict has _error placeholder."""
+        from stock_analysis_agent.tools import market_data as md
+
+        async def _ok(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return {"data": {"代码": "02319"}, "row_index": 0}
+
+        monkeypatch.setattr(md, "_fetch_tushare", _ok)
+        monkeypatch.setattr(md, "_fetch_akshare", _ok)
+        monkeypatch.setattr(md, "_fetch_mootdx", _ok)
+        monkeypatch.setattr(md, "_detect_peers", lambda s, n: None)
+
+        result = await md._fetch_and_concat(
+            "02319.HK",
+            sources=("tushare", "akshare"),
+            include_peers=True,
+            peer_count=2,
+            cache=None,
+        )
+        assert "peers" in result
+        assert "_error" in result["peers"]
+        assert result["peers"]["_error"]["type"] == "PeerDetectionError"
+
+    @pytest.mark.asyncio
+    async def test_concat_cache_roundtrip_returns_equal_dict(self, tmp_path) -> None:
+        """Cache miss writes JSON; cache hit returns equal dict."""
+        import json as _json
+        from stock_analysis_agent.memory import _FileCache
+        from stock_analysis_agent.tools import market_data as md
+
+        async def _ok(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return {"data": {"ts_code": "02319.HK", "name": "蒙牛"}, "row_index": 0}
+
+        original_tushare = md._fetch_tushare
+        original_akshare = md._fetch_akshare
+        original_mootdx = md._fetch_mootdx
+        md._fetch_tushare = _ok  # type: ignore[assignment]
+        md._fetch_akshare = _ok  # type: ignore[assignment]
+        md._fetch_mootdx = _ok  # type: ignore[assignment]
+
+        cache = _FileCache(tmp_path, ttl_seconds=60.0)
+        try:
+            # First call: writes cache.
+            first = await md._fetch_and_concat(
+                "02319.HK",
+                sources=("tushare", "akshare", "mootdx"),
+                include_peers=False,
+                peer_count=0,
+                cache=cache,
+            )
+            # Second call: hits cache.
+            second = await md._fetch_and_concat(
+                "02319.HK",
+                sources=("tushare", "akshare", "mootdx"),
+                include_peers=False,
+                peer_count=0,
+                cache=cache,
+            )
+        finally:
+            md._fetch_tushare = original_tushare  # type: ignore[assignment]
+            md._fetch_akshare = original_akshare  # type: ignore[assignment]
+            md._fetch_mootdx = original_mootdx  # type: ignore[assignment]
+
+        # Cache hit must return an equal dict.
+        assert first == second
+        # The cached text on disk must be valid JSON.
+        # Cache key format: f"{symbol}|{','.join(sorted(sources))}|peers={peer_count if include_peers else 0}"
+        cached_text = cache.get(
+            site="market_data",
+            query="02319.HK|akshare,mootdx,tushare|peers=0",
+        )
+        assert cached_text is not None
+        parsed = _json.loads(cached_text)
+        assert parsed["02319.HK"]["tushare"]["data"]["name"] == "蒙牛"
+
+    @pytest.mark.asyncio
+    async def test_concat_cache_handles_stale_text_entry_as_miss(
+        self, tmp_path
+    ) -> None:
+        """If the on-disk cache holds a non-JSON string (legacy text format),
+        the aggregator must treat it as a miss and re-fetch (no exception)."""
+        from stock_analysis_agent.memory import _FileCache
+        from stock_analysis_agent.tools import market_data as md
+
+        cache = _FileCache(tmp_path, ttl_seconds=60.0)
+        # Pre-seed a cache entry that holds legacy text, not JSON.
+        legacy_key = "02319.HK|akshare,tushare|peers=0"
+        cache.set(site="market_data", query=legacy_key, text="[tushare]\nlegacy text\n")
+
+        async def _ok(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return {"data": {"ts_code": "02319.HK"}, "row_index": 0}
+
+        original_tushare = md._fetch_tushare
+        original_akshare = md._fetch_akshare
+        md._fetch_tushare = _ok  # type: ignore[assignment]
+        md._fetch_akshare = _ok  # type: ignore[assignment]
+        try:
+            # Must not raise even though legacy text is unparseable as JSON.
+            result = await md._fetch_and_concat(
+                "02319.HK",
+                sources=("tushare", "akshare"),
+                include_peers=False,
+                peer_count=0,
+                cache=cache,
+            )
+        finally:
+            md._fetch_tushare = original_tushare  # type: ignore[assignment]
+            md._fetch_akshare = original_akshare  # type: ignore[assignment]
+
+        assert "02319.HK" in result
+
+    @pytest.mark.asyncio
+    async def test_concat_runs_in_parallel(self) -> None:
+        """3 sources with ~100ms delay each → total < 250ms (parallel)."""
+        import asyncio
+        import time
+
+        from stock_analysis_agent.tools import market_data as md
+
+        async def _slow(*args, **kwargs):  # type: ignore[no-untyped-def]
+            await asyncio.sleep(0.1)
+            return {"data": {}, "row_index": 0}
+
+        original_tushare = md._fetch_tushare
+        original_akshare = md._fetch_akshare
+        original_mootdx = md._fetch_mootdx
+        md._fetch_tushare = _slow  # type: ignore[assignment]
+        md._fetch_akshare = _slow  # type: ignore[assignment]
+        md._fetch_mootdx = _slow  # type: ignore[assignment]
+        try:
+            start = time.monotonic()
+            result = await md._fetch_and_concat(
+                "02319.HK",
+                sources=("tushare", "akshare", "mootdx"),
+                include_peers=False,
+                peer_count=0,
+                cache=None,
+            )
+            elapsed = time.monotonic() - start
+        finally:
+            md._fetch_tushare = original_tushare  # type: ignore[assignment]
+            md._fetch_akshare = original_akshare  # type: ignore[assignment]
+            md._fetch_mootdx = original_mootdx  # type: ignore[assignment]
+
+        assert elapsed < 0.25, f"expected parallel, took {elapsed:.3f}s"
+        assert "02319.HK" in result
 
 
 class TestGetStockSnapshotTool:

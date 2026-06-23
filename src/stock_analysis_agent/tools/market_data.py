@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import json
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -542,16 +543,22 @@ async def _fetch_and_concat(
     include_peers: bool,
     peer_count: int,
     cache: _FileCache | None,
-) -> str:
+) -> dict[str, Any]:
     """Aggregate snapshots from all configured sources for `symbol`.
 
+    Returns a nested dict:
+      - top-level key `<symbol>` → per-source ``{"data", "row_index"}`` /
+        ``{"error", ...}`` blocks
+      - top-level ``fetched_at`` (ISO 8601)
+      - top-level ``peers`` (only when ``include_peers=True``)
+
     Behaviour:
-      1. Compute composite cache key and short-circuit on hit.
+      1. Compute composite cache key; short-circuit on hit.
       2. Fan out per-source fetches via ``asyncio.gather``.
-      3. If ``include_peers``, detect top-N peers and append a
-         ``[peers]`` section rendered from akshare only.
+      3. If ``include_peers``, detect top-N peers and add a ``peers``
+         block (akshare only).
       4. If every primary source errored, raise ``ToolExecutionError``.
-      5. Write the aggregated text to cache (best-effort).
+      5. Write the aggregated dict to cache (best-effort) as JSON.
 
     Args:
         symbol: Standard code, e.g. ``"02319.HK"``.
@@ -561,13 +568,12 @@ async def _fetch_and_concat(
         cache: Optional file cache for whole-snapshot memoization.
 
     Returns:
-        Concatenated text with one section per source plus optional
-        ``[peers]`` section.
+        Nested dict as described above.
 
     Raises:
         ValueError: If ``sources`` is empty.
         ToolExecutionError: If every configured primary source returned
-            an error segment.
+            an error block.
     """
     from stock_analysis_agent.agent.exceptions import ToolExecutionError
 
@@ -583,11 +589,16 @@ async def _fetch_and_concat(
     if cache is not None:
         hit = cache.get(site=cache_site, query=cache_key)
         if hit is not None:
-            return hit
+            # Stale entries from the pre-refactor text format will fail to
+            # parse; treat as a cache miss and re-fetch.
+            try:
+                return json.loads(hit)
+            except (ValueError, TypeError):
+                pass
 
     translated = _translate(symbol)
 
-    async def _call(src: SourceName) -> str:
+    async def _call(src: SourceName) -> dict[str, Any]:
         try:
             if src == "tushare":
                 return await _fetch_tushare(
@@ -599,44 +610,58 @@ async def _fetch_and_concat(
                 return await _fetch_mootdx(
                     translated["mootdx"], translated["mootdx_symbol"]
                 )
-            return f"[error: unknown source {src!r}]"
+            return {"error": {"type": "UnknownSource", "message": f"unknown source {src!r}"}}
         except Exception as e:  # noqa: BLE001 — top-level guard
-            return f"[{src}]\n[error: {type(e).__name__}: {e}]\n"
+            return {
+                "error": {
+                    "type": type(e).__name__,
+                    "message": str(e),
+                }
+            }
 
-    parts = await asyncio.gather(*(_call(s) for s in sources))
+    fetch_results = await asyncio.gather(*(_call(s) for s in sources))
+    parts: dict[str, Any] = {src: res for src, res in zip(sources, fetch_results)}
 
-    # If ALL primary sources errored, raise so the retry middleware acts.
-    if parts and all("[error:" in p for p in parts):
+    # Preserve "all sources failed → raise" so retry middleware has something to act on.
+    if parts and all("error" in v and "data" not in v for v in parts.values()):
         raise ToolExecutionError(
             f"all sources failed for {symbol}: {list(sources)}"
         )
 
+    result: dict[str, Any] = {symbol: parts, "fetched_at": _now_iso()}
+
     if include_peers and peer_count > 0:
         peer_symbols = _detect_peers(symbol, peer_count)
         if peer_symbols is None:
-            parts.append(
-                "[peers]\n[error: industry detection failed]\n"
-            )
+            result["peers"] = {
+                "_error": {
+                    "type": "PeerDetectionError",
+                    "message": "industry detection failed",
+                }
+            }
         else:
-            peer_lines = ["[peers]"]
+            peers_dict: dict[str, Any] = {}
             for psym in peer_symbols:
+                ptrans = _translate(psym)
                 try:
-                    ptrans = _translate(psym)
-                    peer_text = await _fetch_akshare(ptrans["akshare"])
+                    pres = await _fetch_akshare(ptrans["akshare"])
                 except Exception as e:  # noqa: BLE001
-                    peer_lines.append(
-                        f"- {psym}: [error: "
-                        f"{type(e).__name__}: {e}]"
-                    )
-                    continue
-                peer_lines.append(f"- {psym}:\n{peer_text.strip()}")
-            parts.append("\n".join(peer_lines) + "\n")
-
-    result = "\n".join(parts)
+                    pres = {
+                        "error": {
+                            "type": type(e).__name__,
+                            "message": str(e),
+                        }
+                    }
+                peers_dict[psym] = {"akshare": pres}
+            result["peers"] = peers_dict
 
     if cache is not None:
         try:
-            cache.set(site=cache_site, query=cache_key, text=result)
+            cache.set(
+                site=cache_site,
+                query=cache_key,
+                text=json.dumps(result, ensure_ascii=False, default=_json_default),
+            )
         except OSError:
             pass  # cache write failure does not fail the search
 
