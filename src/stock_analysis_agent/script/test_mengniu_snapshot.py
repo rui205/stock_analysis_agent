@@ -6,6 +6,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -40,10 +41,10 @@ async def _main() -> int:
                     "peer_count": 2,
                 }
             )
-            print(result, flush=True)
+            print(json.dumps(result, indent=2, ensure_ascii=False), flush=True)
             print("-" * 60, flush=True)
             print(
-                "(cached: re-running returns identical text "
+                "(cached: re-running returns identical dict "
                 "in <1ms, zero network)",
                 flush=True,
             )
