@@ -80,7 +80,7 @@
   "news_catalysts": ["近期催化点 1(日期+来源)", "..."],
   "peer_compare": "<2-4 句同行对比,引数据;若 {include_clause} 写 'N/A'>",
   "risks": [
-    {{"type": "行业|政策|财务|估值|流动性|治理", "description": "...", "severity": "high|medium|low"}}
+    {{"type": "6 选 1 固定枚举: 行业 / 政策 / 财务 / 估值 / 流动性 / 治理(与 Step 4 的 4 个评分维度基本面/技术面/消息面/同行对比 无关,不允许自造;数据缺失类风险归到 财务 或 估值,在 description 里说明)", "description": "...", "severity": "high|medium|low"}}
   ],
   "action_plan": {{
     "position_size": "<如 '建议占总资金 5-10%'>",
@@ -97,4 +97,5 @@
 3. **价位可解释**:`price_plan` 必须能反向追溯到 Step 1 的数据,不要拍脑袋
 4. **决策可解释**:`reasoning_chain` 至少 500 字,能让读者独立判断对错
 5. **输出纯净**:只输出 JSON,不要 ```json``` 包裹,不要前后解释
+6. **risks.type 严格 6 选 1**:只能是 行业 / 政策 / 财务 / 估值 / 流动性 / 治理 之一。`数据` / `数据风险` / `基本面` / `消息面` 等不在枚举里,会被 schema 校验直接拒;数据缺失请归到 `财务` 或 `估值`
 """
