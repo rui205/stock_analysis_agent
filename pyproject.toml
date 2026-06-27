@@ -31,3 +31,12 @@ packages = ["src/stock_analysis_agent"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.basedpyright]
+# Tell basedpyright to use the project venv for import resolution.
+# The .vscode/settings.json python-envs.* keys are auto-managed by the
+# Python extension and reset to system Python on every reload, so they
+# can't be relied on. venvPath/venv here is read directly by basedpyright
+# (and pyright) and survives reloads / IDE env auto-detection.
+venvPath = "."
+venv = ".venv"
