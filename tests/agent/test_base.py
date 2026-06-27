@@ -33,15 +33,77 @@ def test_base_agent_stores_model_config() -> None:
     agent = _NoopAgent(
         model="claude-opus-4-8",
         temperature=0.7,
-        max_tokens=8192,
+        max_tokens=32768,
         max_retries=5,
         name="custom-name",
     )
     assert agent.model == "claude-opus-4-8"
     assert agent.temperature == 0.7
-    assert agent.max_tokens == 8192
+    assert agent.max_tokens == 32768
     assert agent.max_retries == 5
     assert agent.name == "custom-name"
+
+
+def test_base_agent_recursion_limit_defaults_to_none() -> None:
+    """``recursion_limit`` defaults to ``None`` — LangGraph's own default
+    (25) applies unless a subclass opts in."""
+    assert _NoopAgent().recursion_limit is None
+
+
+def test_base_agent_recursion_limit_stores_value() -> None:
+    """``recursion_limit`` is stored verbatim when provided."""
+    agent = _NoopAgent(recursion_limit=6)
+    assert agent.recursion_limit == 6
+
+
+def test_base_agent_max_tokens_default_is_32768() -> None:
+    """The default ``max_tokens`` is 32768 — large enough for the full
+    analysis JSON (12 fields + ~1200-word reasoning) without truncation,
+    even when the model is verbose. Subclasses can override down."""
+    assert _NoopAgent().max_tokens == 32768
+
+
+# ---------------------------------------------------------------------------
+# _resolve_config — recursion_limit injection
+# ---------------------------------------------------------------------------
+
+
+class TestResolveConfig:
+    """The base agent's _resolve_config helper merges the default
+    ``recursion_limit`` into caller-supplied LangChain config."""
+
+    def test_returns_empty_dict_when_no_default_and_no_caller_config(self) -> None:
+        agent = _NoopAgent()
+        assert agent._resolve_config(None) == {}
+
+    def test_passes_through_caller_config_when_no_default(self) -> None:
+        """Without a default, caller's config is returned as a shallow copy."""
+        agent = _NoopAgent()
+        caller_config = {"configurable": {"thread_id": "abc"}}
+        result = agent._resolve_config(caller_config)
+        assert result == {"configurable": {"thread_id": "abc"}}
+        # Mutating the result must not mutate the caller's dict.
+        result["x"] = 1
+        assert "x" not in caller_config
+
+    def test_injects_default_when_caller_omits_recursion_limit(self) -> None:
+        agent = _NoopAgent(recursion_limit=6)
+        result = agent._resolve_config({"configurable": {"thread_id": "t1"}})
+        assert result["recursion_limit"] == 6
+        assert result["configurable"] == {"thread_id": "t1"}
+
+    def test_respects_caller_supplied_recursion_limit(self) -> None:
+        """If the caller already set recursion_limit, the agent's default
+        must not overwrite it."""
+        agent = _NoopAgent(recursion_limit=6)
+        result = agent._resolve_config({"recursion_limit": 100})
+        assert result["recursion_limit"] == 100
+
+    def test_default_injection_with_none_caller_config(self) -> None:
+        """Injecting into a None caller config still produces a populated dict."""
+        agent = _NoopAgent(recursion_limit=6)
+        result = agent._resolve_config(None)
+        assert result == {"recursion_limit": 6}
 
 
 def test_base_agent_name_defaults_to_class_name() -> None:

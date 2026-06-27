@@ -8,8 +8,34 @@
 - 每源要么 `{{"data": <row dict>, "row_index": int}}` 要么 `{{"error": {{...}}}}`
 - 引用任何数据时**必须**标注来源(如 "tushare 报 PE=11.03")。**禁止用训练知识补全缺失字段**
 
-### Step 2 · 加载格式化规则
-调用工具 `load_skill`,参数 `name="stock-snapshot-format"`,加载七段式公司画像规则,Step 4 的 `company_profile` 字段按其 output contract 渲染。
+### Step 2 · 可用资源清单(模型自决)
+
+本会话为你准备了以下工具和 skill,你可以**根据本轮分析目标自行决定**是否调用。
+
+#### 可用工具(tools)
+
+| 工具名 | 用途 |
+|--------|------|
+| `get_stock_snapshot` | 获取 `{symbol}` 的多源行情(tushare / akshare / mootdx),返回嵌套 dict。**必调** |
+| `web_search` | 在配置站点列表中搜索补充信息(公告 / 行业新闻 / 政策) |
+| `load_skill` | 加载某个 skill 的完整指令(用法见下方「可用 skill」) |
+
+#### 可用 skill
+
+skill 不是工具,而是**按需加载的完整指令文档**。需要时调用 `load_skill(name="<skill-name>")` 即可获取。
+
+| skill name | description |
+|------------|-------------|
+| `stock-snapshot-format` | 将 `get_stock_snapshot` 的多源嵌套 JSON 渲染为标准化的七段式公司画像(公司简介 / 主营业务 / 当前股价与估值 / 财务概览 / 近期公告与新闻 / 治理变动 / 数据声明 / (可选) 同业对比),并明确数据源优先级与合并规则。**触发场景**:要写 `company_profile` 段、跨多源合并字段、需要明确的字段映射约定 |
+
+#### 决策原则
+
+- `get_stock_snapshot` **必调** —— Step 1 拿不到数据后面全断
+- `load_skill` **按需** —— 不需要写 `company_profile` 或不需要七段式格式时不必调
+- `web_search` **按需** —— Step 1 数据已经覆盖,或用户明确不要外部信息时不必调
+- 同一 skill 的重复调用不会带来新信息,合理判断后不必反复调
+
+> 说明:本会话对工具 / skill 的总调用次数有上限(代码层强制),GraphRecursionError 即代表达到上限,届时应基于已有信息完成输出,不再发起新调用。
 
 ### Step 3 · 补充信息
 {web_search_clause}

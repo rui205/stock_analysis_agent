@@ -449,6 +449,44 @@ class TestDetectPeers:
         result = md._detect_peers("02319.HK", peer_count=2)
         assert result == ["600887.SH", "600597.SH"]
 
+    def test_detect_peers_skips_unsupported_market_codes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Codes outside the SH/SZ prefix ranges (Beijing exchange
+        ``4xxxxx`` / ``8xxxxx`` / ``92xxxxx``) cannot be translated by
+        ``_translate`` and would crash the snapshot tool. They must be
+        filtered out of the peer list — the snapshot table simply has
+        fewer rows. The input symbol is preserved at the head."""
+        import akshare as ak
+        import pandas as pd
+
+        industries = pd.DataFrame([{"板块名称": "专用机械"}])
+        cons = pd.DataFrame(
+            [
+                {"代码": "603283", "名称": "赛腾股份", "总市值": 100},
+                {"代码": "688596", "名称": "正帆科技", "总市值": 90},
+                # Beijing-exchange codes that _translate cannot handle:
+                {"代码": "920363", "名称": "BJ-A", "总市值": 80},
+                {"代码": "430047", "名称": "BJ-B", "总市值": 70},
+                {"代码": "830779", "名称": "BJ-C", "总市值": 60},
+            ]
+        )
+
+        monkeypatch.setattr(ak, "stock_board_industry_name_em", lambda: industries)
+        monkeypatch.setattr(ak, "stock_board_industry_cons_em", lambda symbol: cons)
+
+        fake_info = pd.DataFrame([{"行业": "专用机械"}])
+        monkeypatch.setattr(
+            ak, "stock_individual_info_em", lambda symbol: fake_info,
+        )
+
+        from stock_analysis_agent.tools import market_data as md
+
+        result = md._detect_peers("603283.SH", peer_count=5)
+        # Only SH/SZ-mapped codes survive. The input symbol is promoted
+        # to the front; all 4xxxxx/8xxxxx/92xxxxx peers are dropped.
+        assert result == ["603283.SH", "688596.SH"]
+
     def test_detect_peers_invokes_em_request_hook(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -72,6 +72,7 @@ class StockAnalysisAgent(BaseAgent):
         cache_dir: str | Path | None = None,
         cache_ttl: float | None = DEFAULT_CACHE_TTL,
         max_retries: int = 3,
+        recursion_limit: int = 6,
         **kwargs: Any,
     ) -> None:
         if not symbol:
@@ -118,6 +119,7 @@ class StockAnalysisAgent(BaseAgent):
         super().__init__(
             system_prompt=system_prompt,
             max_retries=max_retries,
+            recursion_limit=recursion_limit,
             tools=tools,
             **kwargs,
         )
