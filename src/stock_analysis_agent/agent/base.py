@@ -30,8 +30,9 @@ class BaseAgent:
         tools: Sequence[BaseTool | Callable[..., Any]] = (),
         model: str = "claude-sonnet-4-6",
         temperature: float = 0.0,
-        max_tokens: int = 4096,
+        max_tokens: int = 32768,
         max_retries: int = 2,
+        recursion_limit: int | None = None,
         name: str | None = None,
     ) -> None:
         self._system_prompt = system_prompt
@@ -40,6 +41,7 @@ class BaseAgent:
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._max_retries = max_retries
+        self._recursion_limit = recursion_limit
         self._name = name if name is not None else type(self).__name__
 
     @property
@@ -62,6 +64,37 @@ class BaseAgent:
     @property
     def max_retries(self) -> int:
         return self._max_retries
+
+    @property
+    def recursion_limit(self) -> int | None:
+        """Default ``recursion_limit`` injected into the graph config.
+
+        ``None`` means no default — the LangGraph default (25) applies.
+        Subclasses can set this to cap ReAct-style iteration depth.
+        """
+        return self._recursion_limit
+
+    def _resolve_config(
+        self, config: RunnableConfig | None
+    ) -> RunnableConfig:
+        """Merge the default ``recursion_limit`` into ``config`` if appropriate.
+
+        Rules:
+        - If the agent has no default (``recursion_limit is None``), return
+          ``config`` unchanged (or ``{}`` if it was ``None``).
+        - If the caller already passed a ``recursion_limit`` key, respect it.
+        - Otherwise inject the agent's default into a shallow copy.
+
+        Args:
+            config: Caller-supplied LangChain runnable config (may be ``None``).
+
+        Returns:
+            The config to pass to ``graph.astream_events``. Never ``None``.
+        """
+        base: RunnableConfig = dict(config) if config else {}
+        if self._recursion_limit is None or "recursion_limit" in base:
+            return base
+        return {**base, "recursion_limit": self._recursion_limit}
 
     @property
     def name(self) -> str:
@@ -114,6 +147,7 @@ class BaseAgent:
         import threading
 
         graph = self._build_graph()
+        resolved_config = self._resolve_config(config)
         event_queue: queue.Queue = queue.Queue()
         sentinel = object()
         exception_holder: list[BaseException] = []
@@ -123,7 +157,7 @@ class BaseAgent:
                 async for event in graph.astream_events(
                     {"messages": list(messages)},
                     version="v2",
-                    config=config,
+                    config=resolved_config,
                 ):
                     event_queue.put(event)
             except BaseException as exc:
@@ -164,9 +198,10 @@ class BaseAgent:
         between calls.
         """
         graph = self._build_graph()
+        resolved_config = self._resolve_config(config)
         async for event in graph.astream_events(
             {"messages": list(messages)},
             version="v2",
-            config=config,
+            config=resolved_config,
         ):
             yield event

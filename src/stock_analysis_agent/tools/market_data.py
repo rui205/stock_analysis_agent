@@ -521,7 +521,13 @@ def _detect_peers(symbol: str, peer_count: int) -> list[str] | None:
         elif c.startswith(("0", "3")):
             result.append(f"{c}.SZ")
         else:
-            result.append(c)
+            # Codes outside the SH/SZ prefix ranges (e.g. Beijing
+            # exchange ``4xxxxx`` / ``8xxxxx`` / ``92xxxxx``) cannot be
+            # translated by ``_translate`` and would crash the snapshot
+            # tool. Skip them — the comparison table will simply have
+            # fewer rows, which the skill's §8 already documents as a
+            # valid outcome.
+            continue
     # If the input symbol itself is already among the peers (e.g. an
     # A-share whose code is in the cons list), promote it to the front.
     # Otherwise leave the list untouched — peer detection is best-effort

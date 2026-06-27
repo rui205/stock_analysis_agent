@@ -161,3 +161,31 @@ def test_empty_symbol_is_rejected() -> None:
     """Symbol is the primary key — empty must fail loudly."""
     with pytest.raises(ValueError, match="symbol"):
         StockAnalysisAgent(symbol="", system_prompt=_TEST_PROMPT)
+
+
+# ---------------------------------------------------------------------------
+# recursion_limit — caps ReAct-style iteration depth
+# ---------------------------------------------------------------------------
+
+
+def test_default_recursion_limit_is_six() -> None:
+    """Default is 6 — corresponds to ~3 ReAct iterations (each iteration
+    traverses 2 graph nodes). Subclasses can override."""
+    assert _agent().recursion_limit == 6
+
+
+def test_custom_recursion_limit_is_stored() -> None:
+    """Caller may override the default; the value is exposed verbatim."""
+    agent = StockAnalysisAgent(
+        symbol="02319.HK",
+        system_prompt=_TEST_PROMPT,
+        recursion_limit=12,
+    )
+    assert agent.recursion_limit == 12
+
+
+def test_recursion_limit_propagates_to_resolved_config() -> None:
+    """``stream`` / ``astream`` must surface the default to the graph
+    even when the caller passes ``config=None``."""
+    agent = _agent()
+    assert agent._resolve_config(None) == {"recursion_limit": 6}
