@@ -1,0 +1,46 @@
+2026-04-03 17:28:13,484 - root - ERROR - Config validation failed: API Key not found. Please set IWENCAI_API_KEY environment variable.
+2026-04-03 17:28:13,526 - utils - INFO - Read 3 queries from /var/folders/yg/017vh_216fvgqpy0wzd3c5280000gn/T/tmppxaaivi1.txt
+2026-04-03 17:28:13,530 - utils - INFO - Data saved to CSV: /var/folders/yg/017vh_216fvgqpy0wzd3c5280000gn/T/tmpnfcficq_.csv
+2026-04-03 17:28:13,532 - utils - INFO - Data saved to JSON: /var/folders/yg/017vh_216fvgqpy0wzd3c5280000gn/T/tmpsr1oycl3.json
+2026-04-03 17:28:13,549 - utils - ERROR - Query cannot be empty
+2026-04-03 17:28:13,549 - utils - ERROR - Query cannot be empty
+2026-04-03 17:28:13,552 - utils - ERROR - Query is too short
+2026-04-03 17:28:18,105 - root - ERROR - Config validation failed: API Key not found. Please set IWENCAI_API_KEY environment variable.
+2026-04-03 17:28:18,111 - utils - INFO - Read 3 queries from /var/folders/yg/017vh_216fvgqpy0wzd3c5280000gn/T/tmpizak31ma.txt
+2026-04-03 17:28:18,113 - utils - INFO - Data saved to CSV: /var/folders/yg/017vh_216fvgqpy0wzd3c5280000gn/T/tmp61w2rm5i.csv
+2026-04-03 17:28:18,115 - utils - INFO - Data saved to JSON: /var/folders/yg/017vh_216fvgqpy0wzd3c5280000gn/T/tmp7mbiq7qf.json
+2026-04-03 17:28:18,116 - utils - ERROR - Query cannot be empty
+2026-04-03 17:28:18,118 - utils - ERROR - Query cannot be empty
+2026-04-03 17:28:18,119 - utils - ERROR - Query is too short
+2026-04-10 14:07:34,338 - announcement_search - INFO - 搜索公告: 贵州茅台 公告
+2026-04-10 14:07:34,815 - announcement_search - INFO - 找到 10 条公告
+2026-04-10 14:07:41,910 - announcement_search - INFO - 搜索公告: 贵州茅台 公告
+2026-04-10 14:07:42,488 - announcement_search - INFO - 找到 10 条公告
+2026-04-17 20:01:25,018 - announcement_search - INFO - 搜索公告: 茅台 公告
+2026-04-17 20:01:25,407 - announcement_search - INFO - 找到 10 条公告
+2026-04-17 20:02:00,989 - announcement_search - INFO - 搜索公告: 茅台 公告
+2026-04-17 20:02:01,430 - announcement_search - INFO - 找到 10 条公告
+2026-04-17 21:02:02,357 - announcement_search - INFO - 搜索公告: 小米 公告
+2026-04-17 21:02:02,794 - announcement_search - INFO - 找到 5 条公告
+2026-04-17 21:02:13,053 - announcement_search - INFO - 搜索公告: 小米 公告
+2026-04-17 21:02:13,695 - announcement_search - INFO - 找到 5 条公告
+2026-04-17 21:07:50,106 - announcement_search - INFO - 搜索公告: 茅台 公告
+2026-04-17 21:07:50,596 - announcement_search - INFO - 找到 10 条公告
+2026-04-17 21:08:01,577 - announcement_search - INFO - 搜索公告: 茅台 公告
+2026-04-17 21:08:02,026 - announcement_search - INFO - 找到 10 条公告
+2026-04-28 21:16:58,868 - __main__ - INFO - 搜索公告: 贵州茅台 公告
+2026-04-28 21:16:59,279 - __main__ - INFO - API调用成功，Trace ID: 226bcc881ef3f00b424bba90bff41d221b634d52f0c08f6b790da841630626a0
+2026-04-28 21:16:59,282 - __main__ - INFO - 搜索公告: 上市公司业绩预告
+2026-04-28 21:16:59,644 - __main__ - INFO - API调用成功，Trace ID: 1581c5cbf52dde264e99e0433ae912c26eedd3a9d4812d644f617626579dc136
+2026-04-28 21:16:59,647 - __main__ - INFO - 搜索公告: 分红派息
+2026-04-28 21:16:59,930 - __main__ - INFO - API调用成功，Trace ID: 009986e3e0162779e9eddddafc03525a5ed2a947a5a6ea36ea1f37e09c4f8642
+2026-04-28 21:16:59,933 - __main__ - INFO - 智能分析用户查询: 贵州茅台和五粮液最近有什么公告
+2026-04-28 21:16:59,933 - __main__ - INFO - 分析后的查询列表: ['贵州茅台 公告', '五粮液最近有什么公告 公告']
+2026-04-28 21:17:07,023 - __main__ - INFO - 搜索公告: 贵州茅台 公告
+2026-04-28 21:17:07,672 - __main__ - INFO - API调用成功，Trace ID: 0cdf098f9d4612a908216cfb81eb6b7e384c0c3f4532ed214fdeba2b7afb4c64
+2026-04-28 21:17:07,682 - __main__ - INFO - 搜索公告: 上市公司业绩预告
+2026-04-28 21:17:08,381 - __main__ - INFO - API调用成功，Trace ID: 858526961c3d604389689adecf390575c5726613468d1f6ecc7535f9e6bc688e
+2026-04-28 21:17:08,387 - __main__ - INFO - 搜索公告: 分红派息
+2026-04-28 21:17:08,859 - __main__ - INFO - API调用成功，Trace ID: f1c1da188e4e4fb7164501f3e8bd158d88cf691850ff66e077069cdeacdbf760
+2026-04-28 21:17:08,869 - __main__ - INFO - 智能分析用户查询: 贵州茅台和五粮液最近有什么公告
+2026-04-28 21:17:08,872 - __main__ - INFO - 分析后的查询列表: ['贵州茅台 公告', '五粮液最近有什么公告 公告']
