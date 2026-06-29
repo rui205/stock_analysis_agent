@@ -1,6 +1,7 @@
 """Tests for script/analyze_stock.py helpers and orchestration."""
 from __future__ import annotations
 
+import inspect
 import json
 import re
 from pathlib import Path
@@ -309,8 +310,6 @@ def test_load_system_prompt_takes_no_arguments() -> None:
 
     Guards against accidental re-introduction of placeholder logic.
     """
-    import inspect
-
     sig = inspect.signature(_load_system_prompt)
     assert len(sig.parameters) == 0, (
         f"_load_system_prompt should take no arguments now; got {sig.parameters}"
