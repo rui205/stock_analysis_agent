@@ -69,18 +69,6 @@ def output_dir() -> Path:
 _PROMPT_FILE: Path = Path(__file__).resolve().parents[1] / "prompts" / "system_prompt.md"
 
 
-#: Prompt fragments injected into ``{web_search_clause}``. These clauses are
-#: owned by the script because they are an artefact of the bundled
-#: ``system_prompt.md`` template — the agent itself is schema-agnostic and
-#: does not know about web_search policy.
-_WEB_SEARCH_ENABLED_CLAUSE: str = "视需要调用 web_search 补充近期新闻/公告/分析师观点。"
-_WEB_SEARCH_DISABLED_CLAUSE: str = (
-    "**没有 web_search 工具**(搜索引擎被屏蔽/不可用)。仅依靠 "
-    "get_stock_snapshot 的数据 + 你自己的训练知识,不要尝试调用 web_search,"
-    "news 字段若无法补充就写 'N/A'。"
-)
-
-
 # ---------------------------------------------------------------------------
 # Helpers — pure functions, exported for testability.
 # ---------------------------------------------------------------------------
@@ -145,35 +133,20 @@ def _extract_json_object(text: str) -> str:
     return max(candidates, key=len)
 
 
-def _load_system_prompt(
-    symbol: str, include_peers: bool, include_web_search: bool
-) -> str:
-    """Load the system prompt from ``prompts/system_prompt.md`` with the
-    three template variables filled in.
+def _load_system_prompt() -> str:
+    """Load the system prompt from ``prompts/system_prompt.md``.
 
-    The bundled template declares ``{symbol}``, ``{include_clause}`` and
-    ``{web_search_clause}``. ``include_clause`` describes whether the
-    snapshot should include peer data; ``web_search_clause`` tells the
-    LLM whether the ``web_search`` tool is available. Both shapes match
-    the constants used by ``agent.stock_analysis``'s built-in prompt so
-    the LLM-facing instruction is consistent across both code paths.
+    The bundled template is a flat policy document with no template
+    placeholders, so this helper is a thin read — no substitution step.
+    Runtime parameters (symbol, peer inclusion, web-search availability)
+    are passed directly to :class:`StockAnalysisAgent` instead, where
+    they control tool wiring rather than prompt content.
 
     Raises:
         FileNotFoundError: if the bundled ``system_prompt.md`` is missing
             (e.g. the wheel was mis-built and excluded it).
     """
-    include_clause = "include_peers 为 True" if include_peers else "include_peers 为 False"
-    web_search_clause = (
-        _WEB_SEARCH_ENABLED_CLAUSE
-        if include_web_search
-        else _WEB_SEARCH_DISABLED_CLAUSE
-    )
-    template = _PROMPT_FILE.read_text(encoding="utf-8")
-    return template.format(
-        symbol=symbol,
-        include_clause=include_clause,
-        web_search_clause=web_search_clause,
-    )
+    return _PROMPT_FILE.read_text(encoding="utf-8")
 
 
 def render_markdown(a: StockAnalysis) -> str:
@@ -414,11 +387,7 @@ def run(args: argparse.Namespace) -> int:
     # ``prompts/system_prompt.md``. ``StockAnalysisAgent`` is a
     # schema-agnostic low-level agent, so the script (not the agent) owns
     # the output contract.
-    system_prompt = _load_system_prompt(
-        symbol=args.symbol,
-        include_peers=args.include_peers,
-        include_web_search=args.include_web_search,
-    )
+    system_prompt = _load_system_prompt()
     agent = StockAnalysisAgent(
         symbol=args.symbol,
         include_peers=args.include_peers,

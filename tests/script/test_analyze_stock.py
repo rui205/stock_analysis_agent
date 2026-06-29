@@ -287,32 +287,34 @@ def test_prompt_file_exists() -> None:
     assert _PROMPT_FILE.name == "system_prompt.md"
 
 
-def test_load_system_prompt_fills_all_placeholders() -> None:
-    """All three template variables must be filled, no raw braces left."""
-    prompt = _load_system_prompt(
-        symbol="02319.HK", include_peers=True, include_web_search=True,
+def test_load_system_prompt_returns_bundled_prompt() -> None:
+    """The helper returns the bundled ``system_prompt.md`` as a string.
+
+    The current prompt is a flat policy document with no template
+    placeholders — the helper is a thin file read, not a format step.
+    """
+    prompt = _load_system_prompt()
+    assert isinstance(prompt, str)
+    assert prompt.startswith("---"), "expected YAML frontmatter at top of prompt"
+    assert "stock-analyst" in prompt, "expected frontmatter name 'stock-analyst'"
+    assert "## 输出策略" in prompt, (
+        "expected the lark-doc output policy section that was added in "
+        "the previous commit"
     )
-    assert "02319.HK" in prompt
-    assert "include_peers 为 True" in prompt
-    assert "视需要调用 web_search" in prompt
-    for placeholder in ("{symbol}", "{include_clause}", "{web_search_clause}"):
-        assert placeholder not in prompt, f"unfilled placeholder: {placeholder}"
 
 
-def test_load_system_prompt_reflects_include_peers_false() -> None:
-    prompt = _load_system_prompt(
-        symbol="02319.HK", include_peers=False, include_web_search=True,
+def test_load_system_prompt_takes_no_arguments() -> None:
+    """The helper must be callable with zero arguments now that the
+    prompt has no template placeholders.
+
+    Guards against accidental re-introduction of placeholder logic.
+    """
+    import inspect
+
+    sig = inspect.signature(_load_system_prompt)
+    assert len(sig.parameters) == 0, (
+        f"_load_system_prompt should take no arguments now; got {sig.parameters}"
     )
-    assert "include_peers 为 False" in prompt
-    assert "include_peers 为 True" not in prompt
-
-
-def test_load_system_prompt_reflects_web_search_disabled() -> None:
-    prompt = _load_system_prompt(
-        symbol="02319.HK", include_peers=True, include_web_search=False,
-    )
-    assert "没有 web_search 工具" in prompt
-    assert "视需要调用 web_search" not in prompt
 
 
 # ---------------------------------------------------------------------------
