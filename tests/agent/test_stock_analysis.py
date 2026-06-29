@@ -121,6 +121,37 @@ def test_load_skill_is_always_in_tools() -> None:
 
 
 # ---------------------------------------------------------------------------
+# include_shell_tool — opt-in for CLI subprocess execution
+# ---------------------------------------------------------------------------
+
+
+def test_run_command_omitted_by_default() -> None:
+    """``run_command`` is opt-in: off by default — never exposed unless asked.
+
+    The shell tool is a privilege escalation (lets the agent invoke
+    arbitrary CLI programs), so the safe default is to leave it out of
+    the tool list. Tests that want it must pass ``include_shell_tool=True``.
+    """
+    assert "run_command" not in {t.name for t in _agent().tools}
+
+
+def test_include_shell_tool_adds_run_command_to_tools() -> None:
+    """When ``include_shell_tool=True``, ``run_command`` joins the tool list."""
+    a = _agent(include_shell_tool=True)
+    tool_names = {t.name for t in a.tools}
+    assert "run_command" in tool_names
+    # The other defaults are still present.
+    assert "get_stock_snapshot" in tool_names
+    assert "load_skill" in tool_names
+
+
+def test_include_shell_tool_property() -> None:
+    """The ``include_shell_tool`` attribute reflects the constructor flag."""
+    assert _agent().include_shell_tool is False
+    assert _agent(include_shell_tool=True).include_shell_tool is True
+
+
+# ---------------------------------------------------------------------------
 # properties
 # ---------------------------------------------------------------------------
 

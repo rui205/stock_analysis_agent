@@ -339,10 +339,27 @@ def _build_parser() -> argparse.ArgumentParser:
              "scraper). Analysis relies on get_stock_snapshot + LLM knowledge only.",
     )
     parser.add_argument(
+        "--include-shell-tool", dest="include_shell_tool", action="store_true",
+        default=False,
+        help=(
+            "Enable the ``run_command`` tool so the agent can shell out to CLI "
+            "programs (e.g. ``lark-cli docs +create`` to publish the report as a "
+            "Lark cloud document). Off by default — opt in when needed."
+        ),
+    )
+    parser.add_argument(
         "--output-dir", type=Path, default=None,
         help=(
             "Directory to write the rendered Markdown into. Defaults to "
             "<project-root>/output/. Created if missing."
+        ),
+    )
+    parser.add_argument(
+        "--recursion-limit", type=int, default=30,
+        help=(
+            "LangGraph recursion limit for the agent loop. Each tool call "
+            "consumes one step; raise this if analysis needs many web searches. "
+            "Default 30 (LangChain typical). Lower for faster fail-fast tests."
         ),
     )
     parser.add_argument(
@@ -393,61 +410,64 @@ def run(args: argparse.Namespace) -> int:
         include_peers=args.include_peers,
         peer_count=args.peer_count,
         include_web_search=args.include_web_search,
+        include_shell_tool=args.include_shell_tool,
+        recursion_limit=args.recursion_limit,
         system_prompt=system_prompt,
     )
 
-    # 2. Stream.
-    messages = [HumanMessage(content="请按 system prompt 的 schema 给出分析报告。")]
+    # 2. Stream. ``agent.stream()`` returns a generator backed by a
+    # daemon thread that drives the LLM in the background — iterating
+    # it is the only way to actually run the agent to completion. The
+    # LLM-side lark-doc output policy in the bundled prompt is the
+    # canonical delivery channel now; we don't parse, render, or write
+    # anything from here.
+    messages = [HumanMessage(
+        content=f"请按 system prompt 的 schema 给出 {args.symbol} 的分析报告。",
+    )]
     try:
-        events = agent.stream(messages)
+        last_text: str = ""
+        tool_calls: list[tuple[str, str]] = []
+        event_kinds: list[str] = []
+        for event in agent.stream(messages):
+            kind = event.get("event", "")
+            event_kinds.append(kind)
+            if kind == "on_chat_model_stream":
+                # Stream chunks: data["chunk"].content may be a string or list.
+                chunk = event.get("data", {}).get("chunk", {})
+                content = getattr(chunk, "content", "")
+                if isinstance(content, str) and content:
+                    last_text += content
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            last_text += block.get("text", "")
+            elif kind == "on_chat_model_end":
+                output = event.get("data", {}).get("output", {})
+                for tc in getattr(output, "tool_calls", None) or []:
+                    name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+                    args = tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", None)
+                    tool_calls.append((str(name), repr(args)[:200]))
     except ToolExecutionError as e:
         logger.error("agent tools failed: %s", e)
         return EXIT_TOOL
 
-    last_text: str | None = None
-    for event in events:
-        _log_event(event)
-        if event.get("event") == "on_chat_model_end":
-            msg = event["data"].get("output", {})
-            content = getattr(msg, "content", None)
-            if isinstance(content, str) and content.strip():
-                last_text = content
-            elif isinstance(content, list):
-                parts = [
-                    blk.get("text", "")
-                    for blk in content
-                    if isinstance(blk, dict) and blk.get("type") == "text"
-                ]
-                joined = "\n".join(p for p in parts if p)
-                if joined.strip():
-                    last_text = joined
-
-    if not last_text:
-        logger.error("agent emitted no final text")
-        return EXIT_PARSE
-
-    # 3. Strip code fence + extract JSON object + validate.
-    cleaned = _strip_code_fence(last_text)
-    try:
-        json_text = _extract_json_object(cleaned)
-    except ValueError as e:
-        logger.error("could not locate a JSON object in agent output: %s", e)
-        logger.error("raw output (first 500 chars): %s", cleaned[:500])
-        return EXIT_PARSE
-    try:
-        analysis = StockAnalysis.model_validate_json(json_text)
-    except ValidationError as e:
-        logger.error("agent output is not a valid StockAnalysis JSON: %s", e)
-        logger.error("raw output (first 500 chars): %s", json_text[:500])
-        return EXIT_PARSE
-
-    # 4. Render Markdown + write to <project-root>/output/.
-    markdown = render_markdown(analysis)
-    out_dir = args.output_dir if args.output_dir is not None else output_dir()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = build_output_path(args.symbol, out_dir)
-    out_path.write_text(markdown, encoding="utf-8")
-    logger.info("wrote markdown: %s", out_path)
+    # Visibility: the LLM's final text is the canonical script-side output
+    # (the agent's conversation response). When verbose, also dump the
+    # event-kind histogram and the tool calls the agent issued so the
+    # user can see *how* the agent got to the answer.
+    if last_text:
+        print(last_text)
+    if args.verbose:
+        from collections import Counter
+        print(f"\n========== EVENT KINDS ({len(event_kinds)}) ==========")
+        for k, c in Counter(event_kinds).most_common():
+            print(f"  {k}: {c}")
+        print("\n========== LLM TOOL CALLS ==========")
+        if tool_calls:
+            for name, args in tool_calls:
+                print(f"  {name}({args[:200]})")
+        else:
+            print("  (none)")
 
     return EXIT_OK
 

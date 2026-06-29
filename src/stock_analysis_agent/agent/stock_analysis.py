@@ -30,6 +30,7 @@ from stock_analysis_agent.tools.market_data import (
     _SOURCES_PROVIDER,
     _get_stock_snapshot,
 )
+from stock_analysis_agent.tools.shell import run_command
 from stock_analysis_agent.tools.skill import load_skill
 from stock_analysis_agent.tools.web_search import (
     _CACHE_PROVIDER as _WS_CACHE_PROVIDER,
@@ -45,11 +46,12 @@ class StockAnalysisAgent(BaseAgent):
     """LLM-driven stock analysis agent.
 
     Bundles the ``get_stock_snapshot`` (multi-source quote), ``web_search``,
-    and ``load_skill`` tools. The system prompt is **caller-supplied** —
-    pass ``system_prompt=`` to define the output contract the LLM should
-    follow. This class never infers a default prompt, so different callers
-    can target different output schemas (e.g. a terse JSON, a structured
-    Markdown report, a multi-section company profile) without subclassing.
+    ``load_skill``, and (opt-in) ``run_command`` tools. The system
+    prompt is **caller-supplied** — pass ``system_prompt=`` to define
+    the output contract the LLM should follow. This class never infers
+    a default prompt, so different callers can target different output
+    schemas (e.g. a terse JSON, a structured Markdown report, a
+    multi-section company profile) without subclassing.
 
     Construction mirrors :class:`DeepSearchAgent`: it writes into the
     module-level ``_Provider`` singletons used by the @tool callables,
@@ -68,6 +70,7 @@ class StockAnalysisAgent(BaseAgent):
         include_peers: bool = True,
         peer_count: int = 2,
         include_web_search: bool = True,
+        include_shell_tool: bool = False,
         site_list: Sequence[str] | None = None,
         cache_dir: str | Path | None = None,
         cache_ttl: float | None = DEFAULT_CACHE_TTL,
@@ -97,6 +100,7 @@ class StockAnalysisAgent(BaseAgent):
         self._include_peers = include_peers
         self._peer_count = peer_count
         self._include_web_search = include_web_search
+        self._include_shell_tool = include_shell_tool
 
         # Single-instance provider writes — both @tool callables read
         # these via .get() on each invocation. ``market_data`` and
@@ -115,6 +119,8 @@ class StockAnalysisAgent(BaseAgent):
         tools = [_get_stock_snapshot, load_skill]
         if include_web_search:
             tools.append(_web_search)
+        if include_shell_tool:
+            tools.append(run_command)
 
         super().__init__(
             system_prompt=system_prompt,
@@ -139,6 +145,10 @@ class StockAnalysisAgent(BaseAgent):
     @property
     def include_web_search(self) -> bool:
         return self._include_web_search
+
+    @property
+    def include_shell_tool(self) -> bool:
+        return self._include_shell_tool
 
 
 __all__ = ["StockAnalysisAgent"]
