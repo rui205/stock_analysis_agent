@@ -8,6 +8,7 @@ when it needs detailed instructions for a specific task (e.g. formatting
 from __future__ import annotations
 
 from pathlib import Path
+import string
 from typing import Literal
 
 from langchain.tools import tool
@@ -16,9 +17,12 @@ from langchain.tools import tool
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 _SKILLS_DIR = _PACKAGE_ROOT / "skill"
 
-# Known skills — keep in sync with `src/<package>/skill/<name>/SKILL.md`.
-# The Literal type lets the LLM discover available skills via JSON schema.
-_KNOWN_SKILLS: tuple[str, ...] = ("stock-snapshot-format",)
+# Known skills — used to populate the error message when an unknown skill
+# is requested. The ``name`` parameter on :func:`load_skill` is a free-form
+# ``str`` (not a Literal) so the LLM can request any skill whose
+# ``SKILL.md`` exists on disk, including ones not baked into the agent's
+# tool wiring (e.g. ``lark-doc``).
+_KNOWN_SKILLS: tuple[str, ...] = ("stock-snapshot-format", "lark-doc")
 
 
 def _read_skill(name: str) -> str:
@@ -46,7 +50,7 @@ def _read_skill(name: str) -> str:
 
 @tool("load_skill")
 def load_skill(
-    name: Literal["stock-snapshot-format"],
+    name: str,
 ) -> str:
     """Load a project-level skill's full instructions as a Markdown string.
 
@@ -55,7 +59,7 @@ def load_skill(
     user asks for a formatted report, company profile, or similar
     structured output.
 
-    Available skills:
+    Bundled skills include:
         ``"stock-snapshot-format"`` — Format the nested multi-source
         JSON output of ``get_stock_snapshot`` into a standardized company
         profile with sections: 公司简介 / 主营业务 / 当前股价与估值 /
@@ -63,10 +67,14 @@ def load_skill(
         (可选) 同业对比. Use this whenever the user mentions
         公司画像、股票快照、stock snapshot、company profile, or asks
         for a structured summary of the snapshot data.
+        ``"lark-doc"`` — Read/write 飞书云文档 (Docx v2 API). The
+        instructions describe how to invoke the ``lark-cli`` shell
+        command; the agent still needs a tool wrapper to actually spawn
+        ``lark-cli`` (this tool only returns the documentation).
 
     Args:
-        name: The skill name. Currently only
-            ``"stock-snapshot-format"`` is available.
+        name: The skill name. Any skill whose ``SKILL.md`` exists under
+            ``src/<package>/skill/`` is accepted.
 
     Returns:
         The full Markdown content of the skill's ``SKILL.md``. The LLM

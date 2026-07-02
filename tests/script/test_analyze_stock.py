@@ -8,7 +8,6 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from langchain_core.messages import AIMessage
 
 from stock_analysis_agent.agent.analysis_schema import (
     ActionPlan,
@@ -349,161 +348,13 @@ def test_parser_output_dir_flag() -> None:
 # ---------------------------------------------------------------------------
 # run() — orchestration
 # ---------------------------------------------------------------------------
-
-
-def _fake_agent_with_content(content: str) -> MagicMock:
-    agent = MagicMock()
-    agent.stream.return_value = iter(
-        [
-            {
-                "event": "on_chat_model_end",
-                "data": {"output": AIMessage(content=content)},
-            }
-        ]
-    )
-    return agent
-
-
-def _valid_json_payload() -> str:
-    """New-schema JSON payload (matches prompts/system_prompt.md contract)."""
-    return json.dumps(
-        {
-            "symbol": "02319.HK",
-            "company_profile": "### 公司画像:蒙牛乳业\n\n乳制品行业龙头。",
-            "verdict": {
-                "decision": "buy_in",
-                "decision_label": "买进",
-                "confidence": "high",
-                "summary": "基本面扎实,值得买进。",
-            },
-            "price_plan": {
-                "current_price": 16.06,
-                "entry_zone": [15.5, 15.8],
-                "add_zone": [14.0, 14.5],
-                "target_price": 18.5,
-                "stop_loss": 13.5,
-                "expected_return": "+15% ~ +25%",
-                "risk_reward_ratio": "2.5:1",
-                "time_horizon": "1-3 个月",
-            },
-            "scores": {
-                "fundamental": 7.5,
-                "technical": 6.0,
-                "news_catalyst": 5.5,
-                "peer_positioning": 6.5,
-                "weighted_total": 6.6,
-            },
-            "fundamental_analysis": {
-                "highlights": ["ROE 持续 > 15%"],
-                "concerns": ["原奶价格上行"],
-            },
-            "technical_analysis": {
-                "highlights": ["站上 20 日均线"],
-                "concerns": [],
-            },
-            "news_catalysts": ["半年报发布"],
-            "peer_compare": "N/A",
-            "risks": [
-                {"type": "行业", "description": "原奶价格波动", "severity": "medium"},
-            ],
-            "action_plan": {
-                "position_size": "占总资金 5-10%",
-                "execution": ["分批建仓"],
-                "review_triggers": ["触及止损"],
-            },
-            "reasoning_chain": "按 Step 4 框架,加权 6.6,落入 buy_in 区间。" * 5,
-        },
-        ensure_ascii=False,
-    )
-
-
-def test_run_writes_markdown_under_output_dir(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Successful run writes a timestamped Markdown file into ``output/``."""
-    from stock_analysis_agent.script import analyze_stock
-
-    fake_agent = _fake_agent_with_content(_valid_json_payload())
-    monkeypatch.setattr(
-        analyze_stock, "StockAnalysisAgent", lambda **kwargs: fake_agent
-    )
-
-    args = _build_parser().parse_args(
-        ["02319.HK", "--output-dir", str(tmp_path)]
-    )
-    rc = analyze_stock.run(args)
-    assert rc == 0
-
-    # Exactly one markdown file, named for the symbol, written into tmp_path.
-    written = list(tmp_path.glob("stock-analysis-02319_HK-*.md"))
-    assert len(written) == 1
-    text = written[0].read_text(encoding="utf-8")
-    assert "# 02319.HK 分析报告" in text
-    assert "## 投资决策" in text
-    assert "## 价位推算" in text
-    assert "乳制品行业龙头。" in text  # from company_profile
-
-
-def test_run_exits_2_when_agent_output_is_not_json(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    from stock_analysis_agent.script import analyze_stock
-
-    fake_agent = _fake_agent_with_content("not json at all")
-    monkeypatch.setattr(
-        analyze_stock, "StockAnalysisAgent", lambda **kwargs: fake_agent
-    )
-
-    args = _build_parser().parse_args(
-        ["02319.HK", "--output-dir", str(tmp_path)]
-    )
-    rc = analyze_stock.run(args)
-    assert rc == 2
-    # No file should be written when the agent output is invalid.
-    assert list(tmp_path.glob("stock-analysis-*.md")) == []
-
-
-def test_run_strips_code_fence_before_validating(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    from stock_analysis_agent.script import analyze_stock
-
-    fenced = "```json\n" + _valid_json_payload() + "\n```"
-    fake_agent = _fake_agent_with_content(fenced)
-    monkeypatch.setattr(
-        analyze_stock, "StockAnalysisAgent", lambda **kwargs: fake_agent
-    )
-
-    args = _build_parser().parse_args(
-        ["02319.HK", "--output-dir", str(tmp_path)]
-    )
-    rc = analyze_stock.run(args)
-    assert rc == 0
-    written = list(tmp_path.glob("stock-analysis-02319_HK-*.md"))
-    assert len(written) == 1
-
-
-def test_run_creates_output_dir_when_missing(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    """The output directory must be created if it does not already exist."""
-    from stock_analysis_agent.script import analyze_stock
-
-    fake_agent = _fake_agent_with_content(_valid_json_payload())
-    monkeypatch.setattr(
-        analyze_stock, "StockAnalysisAgent", lambda **kwargs: fake_agent
-    )
-
-    target = tmp_path / "fresh" / "nested" / "output"
-    assert not target.exists()
-
-    args = _build_parser().parse_args(
-        ["02319.HK", "--output-dir", str(target)]
-    )
-    rc = analyze_stock.run(args)
-    assert rc == 0
-    assert target.is_dir()
-    assert list(target.glob("stock-analysis-02319_HK-*.md"))
+#
+# ``run()`` is now intentionally minimal: it builds the agent, iterates the
+# stream to completion so the daemon-backed LLM call actually runs, and
+# returns. The lark-doc output policy in ``prompts/system_prompt.md`` is the
+# canonical delivery channel; we no longer parse JSON, render Markdown, or
+# write to the output directory from the script side. Tests that asserted
+# those behaviours have been removed.
 
 
 def test_run_exits_3_when_agent_tools_fail(

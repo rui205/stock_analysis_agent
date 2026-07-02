@@ -27,6 +27,21 @@ def test_default_construction_uses_module_constants(tmp_path: Path) -> None:
     assert agent.cache_dir == tmp_path.resolve()
 
 
+def test_default_site_list_excludes_unreachable_engines() -> None:
+    """DEFAULT_SITE_LIST must not contain DuckDuckGo endpoints, which
+    are unreachable (ConnectTimeout) from the environments this project
+    runs in. Re-including them would silently make every web_search
+    tool call time out and fail.
+    """
+    from stock_analysis_agent.agent.deepsearch import DEFAULT_SITE_LIST
+
+    for url in DEFAULT_SITE_LIST:
+        assert "duckduckgo" not in url, (
+            f"DuckDuckGo is unreachable from this network; remove {url} "
+            "from DEFAULT_SITE_LIST"
+        )
+
+
 def test_custom_site_list_overrides_default(tmp_path: Path) -> None:
     agent = DeepSearchAgent(
         site_list=["https://x.test"], cache_dir=tmp_path, cache_ttl=None

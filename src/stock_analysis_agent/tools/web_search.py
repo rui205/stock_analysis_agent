@@ -21,6 +21,42 @@ _DEFAULT_USER_AGENT: str = (
     "Chrome/120.0.0.0 Safari/537.36"
 )
 
+# Markers that indicate a search engine returned a verification page
+# instead of actual results. If the final URL or response body contains
+# any of these, the response is treated as a failure so the LLM does
+# not try to reason about CAPTCHA UI text.
+_CAPTCHA_URL_MARKERS: tuple[str, ...] = (
+    "wappass.baidu.com",
+    "qcaptcha.so.com",
+    "/captcha",
+    "verify.baidu.com",
+)
+_CAPTCHA_TEXT_MARKERS: tuple[str, ...] = (
+    "请输入验证码",
+    "滑动验证",
+    "人机识别",
+    "captcha",
+    "wappass",
+    "qcaptcha",
+)
+
+
+def _is_captcha_response(*, url: str, text: str) -> bool:
+    """Return True if the response looks like a CAPTCHA / verification page.
+
+    Both the final URL and the body are checked. A 200 OK landing on a
+    CAPTCHA page is still useless to the LLM, so we surface it as an
+    error segment rather than letting it through as if it were search
+    results.
+    """
+    url_lc = url.lower()
+    if any(m in url_lc for m in _CAPTCHA_URL_MARKERS):
+        return True
+    text_lc = text.lower()
+    if any(m in text_lc for m in _CAPTCHA_TEXT_MARKERS):
+        return True
+    return False
+
 
 async def _fetch_and_concat(
     query: str,
@@ -56,6 +92,11 @@ async def _fetch_and_concat(
             client_kwargs: dict[str, Any] = {
                 "timeout": timeout,
                 "headers": {"User-Agent": user_agent},
+                # httpx's default for AsyncClient is follow_redirects=False.
+                # Bing returns 302 → cn.bing.com and Baidu returns 302 →
+                # captcha; both need to be followed to land on the real
+                # response before raise_for_status() runs.
+                "follow_redirects": True,
             }
             if transport is not None:
                 client_kwargs["transport"] = transport
@@ -63,6 +104,8 @@ async def _fetch_and_concat(
                 resp = await client.get(site, params={"q": query})
                 resp.raise_for_status()
                 text = _extract_text(resp.text)
+                if _is_captcha_response(url=str(resp.url), text=text):
+                    return (site, "[error: captcha page returned]")
         except Exception as e:
             return (site, f"[error: {type(e).__name__}: {e}]")
         # 3) Write-through cache (best-effort).

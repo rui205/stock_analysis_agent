@@ -14,6 +14,7 @@ from stock_analysis_agent.memory import _FileCache
 from stock_analysis_agent.tools.web_search import (
     _DEFAULT_USER_AGENT,
     _fetch_and_concat,
+    _is_captcha_response,
     _web_search,
 )
 
@@ -277,3 +278,155 @@ async def test_fetch_accepts_custom_user_agent_override() -> None:
     )
 
     assert seen_uas == [custom_ua]
+
+
+@pytest.mark.asyncio
+async def test_fetch_follows_redirects_on_302() -> None:
+    """httpx's default is ``follow_redirects=False`` for AsyncClient.
+    That breaks Bing and Baidu (both 302 to a real endpoint) because
+    ``raise_for_status()`` then fires on the redirect itself. This test
+    guards the fix: a 302 must be followed transparently, not raised.
+    """
+    seen_urls: list[str] = []
+
+    def _h(request: httpx.Request) -> httpx.Response:
+        seen_urls.append(str(request.url))
+        # First request: 302 redirect. Second: 200 OK with real content.
+        if "redirect.test" in str(request.url):
+            return httpx.Response(
+                302,
+                headers={"Location": "https://final.test/result"},
+                text="redirecting",
+            )
+        return httpx.Response(200, text="<p>real-results</p>")
+
+    transport = httpx.MockTransport(_h)
+    result = await _fetch_and_concat(
+        "q",
+        ["https://redirect.test/"],
+        cache=None,
+        transport=transport,
+    )
+
+    assert "real-results" in result, (
+        f"302 not followed; result was {result!r}. seen_urls={seen_urls!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_constructs_httpx_client_with_follow_redirects_true() -> None:
+    """The httpx.AsyncClient must be created with ``follow_redirects=True``.
+    Direct constructor-kwarg assertion, independent of MockTransport behavior."""
+    import stock_analysis_agent.tools.web_search as ws_module
+
+    captured: dict = {}
+    real_async_client = httpx.AsyncClient
+
+    class _RecordingClient:
+        def __init__(self, *args, **kwargs) -> None:
+            captured.update(kwargs)
+            self._real = real_async_client(*args, **kwargs)
+
+        async def __aenter__(self) -> httpx.AsyncClient:
+            return await self._real.__aenter__()
+
+        async def __aexit__(self, *args: object) -> None:
+            await self._real.__aexit__(*args)
+
+    ws_module.httpx.AsyncClient = _RecordingClient  # type: ignore[misc]
+    try:
+        transport = httpx.MockTransport(
+            lambda req: httpx.Response(200, text="<p>ok</p>")
+        )
+        await _fetch_and_concat(
+            "q", ["https://a.test"], cache=None, transport=transport
+        )
+    finally:
+        ws_module.httpx.AsyncClient = real_async_client  # type: ignore[misc]
+
+    assert captured.get("follow_redirects") is True, (
+        f"expected follow_redirects=True on AsyncClient, got {captured!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# CAPTCHA detection — surface captcha pages as [error: ...] segments so the
+# LLM does not loop trying to "use" the captcha UI text.
+# ---------------------------------------------------------------------------
+
+
+def test_captcha_detected_by_url() -> None:
+    """Final URL on a known captcha domain → captcha flagged."""
+    assert _is_captcha_response(
+        url="https://wappass.baidu.com/static/captcha/tuxing_v2.html",
+        text="<html>some text</html>",
+    )
+    assert _is_captcha_response(
+        url="https://qcaptcha.so.com/?ret=...",
+        text="ok",
+    )
+
+
+def test_captcha_detected_by_text() -> None:
+    """Verification-page text → captcha flagged even on a benign URL."""
+    assert _is_captcha_response(
+        url="https://www.example.com/s",
+        text="请输入验证码 to continue",
+    )
+    assert _is_captcha_response(
+        url="https://www.example.com/s",
+        text="<p>人机识别</p>",
+    )
+    assert _is_captcha_response(
+        url="https://www.example.com/s",
+        text="<title>captcha</title>",
+    )
+
+
+def test_normal_search_response_not_flagged() -> None:
+    """A real search-results page must NOT be flagged as captcha."""
+    assert not _is_captcha_response(
+        url="https://cn.bing.com/search?q=foo",
+        text="<h2>伊利股份 2025 年报</h2><p>净利润同比增长 ...</p>",
+    )
+    assert not _is_captcha_response(
+        url="https://www.example.com/article/123",
+        text="Some normal page content without verification markers.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_treats_captcha_response_as_error_segment() -> None:
+    """A 200 OK that lands on a captcha page must be surfaced as
+    ``[error: captcha ...]`` rather than returned as if it were results.
+    Otherwise the LLM will loop, trying to reason about captcha UI text.
+    """
+    def _h(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "b.test" in url:
+            return httpx.Response(200, text="<p>real-results</p>")
+        if "captcha-final.test" in url:
+            # The redirected-to URL: 200 with captcha-like body.
+            return httpx.Response(200, text="<p>请输入验证码</p>")
+        # First request: 302 → captcha-final.test
+        return httpx.Response(
+            302,
+            headers={"Location": "https://captcha-final.test/captcha"},
+        )
+
+    result = await _fetch_and_concat(
+        "q",
+        ["https://a.test", "https://b.test"],
+        cache=None,
+        transport=httpx.MockTransport(_h),
+    )
+
+    # Normal site returns its real content.
+    assert "real-results" in result
+    # Captcha site is flagged as error, not surfaced as content.
+    assert "请输入验证码" not in result, (
+        f"captcha text leaked to output: {result!r}"
+    )
+    assert "[error: captcha page returned]" in result, (
+        f"captcha not flagged as error: {result!r}"
+    )

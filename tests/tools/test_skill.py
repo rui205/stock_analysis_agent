@@ -29,15 +29,32 @@ class TestLoadSkillTool:
     def test_tool_name_is_load_skill(self) -> None:
         assert load_skill.name == "load_skill"
 
-    def test_tool_args_schema_constrains_name(self) -> None:
-        """The ``name`` parameter must be a Literal — the LLM should not
-        be able to pass arbitrary strings. The schema exposes the const."""
+    def test_tool_args_schema_accepts_any_skill_name(self) -> None:
+        """The ``name`` parameter is a free-form string — any skill whose
+        SKILL.md exists on disk is accepted. The schema no longer
+        constrains the value to a Literal so the LLM can request skills
+        that are not baked into the agent's tool wiring (e.g. ``lark-doc``).
+        """
         schema = load_skill.args
         if hasattr(schema, "model_json_schema"):
             schema = schema.model_json_schema()
-        # LangChain's @tool exposes args as a flat dict for simple
-        # single-parameter tools; Pydantic v2 with Literal -> const-only field.
-        assert schema["name"]["const"] == "stock-snapshot-format"
+        # With a plain ``str`` type, the schema has no ``enum`` or ``const``
+        # restriction — the LLM is free to request any skill name.
+        assert "enum" not in schema["name"]
+        assert "const" not in schema["name"]
+        assert schema["name"]["type"] == "string"
+
+    def test_tool_invoke_returns_lark_doc_skill_markdown(self) -> None:
+        """End-to-end: ``load_skill`` can also read non-builtin skills
+        (e.g. ``lark-doc``) whose SKILL.md exists on disk. This is the
+        relaxation that lets the LLM read the lark-doc instructions at
+        runtime; the agent still needs a separate tool to actually
+        invoke ``lark-cli``.
+        """
+        result = load_skill.invoke({"name": "lark-doc"})
+        assert isinstance(result, str)
+        assert "lark-doc" in result
+        assert "lark-cli" in result
 
     def test_tool_invoke_returns_full_skill_markdown(self) -> None:
         """End-to-end: tool.invoke reads the file and returns the content."""

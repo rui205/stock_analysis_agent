@@ -2,13 +2,20 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
-from typing import Any
+from typing import Any, cast
 
+from langchain.agents.middleware.types import InputAgentState
 from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.schema import StreamEvent
 from langchain_core.tools import BaseTool
 
 from stock_analysis_agent.agent.middleware import _ToolRetryMiddleware
+from stock_analysis_agent.conf.settings import (
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_MODEL,
+    DEFAULT_TEMPERATURE,
+)
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 
@@ -21,6 +28,12 @@ class BaseAgent:
 
     The class is stateless: each call to `stream` / `astream` receives
     the full `messages` list from the caller.
+
+    Default model, temperature, and ``max_tokens`` are sourced from
+    :mod:`stock_analysis_agent.conf.settings` (single source of truth).
+    The API key is read from the ``ANTHROPIC_API_KEY`` env var at
+    :meth:`_build_graph` time — never hardcoded — via
+    :func:`stock_analysis_agent.conf.settings.get_settings`.
     """
 
     def __init__(
@@ -28,9 +41,9 @@ class BaseAgent:
         *,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         tools: Sequence[BaseTool | Callable[..., Any]] = (),
-        model: str = "claude-sonnet-4-6",
-        temperature: float = 0.0,
-        max_tokens: int = 32768,
+        model: str = DEFAULT_MODEL,
+        temperature: float = DEFAULT_TEMPERATURE,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
         max_retries: int = 2,
         recursion_limit: int | None = None,
         name: str | None = None,
@@ -91,7 +104,7 @@ class BaseAgent:
         Returns:
             The config to pass to ``graph.astream_events``. Never ``None``.
         """
-        base: RunnableConfig = dict(config) if config else {}
+        base: RunnableConfig = cast(RunnableConfig, dict(config) if config else {})
         if self._recursion_limit is None or "recursion_limit" in base:
             return base
         return {**base, "recursion_limit": self._recursion_limit}
@@ -106,14 +119,35 @@ class BaseAgent:
 
     def _build_graph(self):  # type: ignore[no-untyped-def]
         """Construct the CompiledStateGraph. Imported lazily so module
-        import is cheap."""
+        import is cheap.
+
+        The LLM API key is sourced from ``$ANTHROPIC_API_KEY`` via
+        :func:`stock_analysis_agent.conf.settings.get_settings` and
+        passed explicitly to ``init_chat_model``. A missing env var
+        raises :class:`MissingAPIKeyError` from that helper — by design,
+        so operators see a clear error before the LangChain stack
+        attempts an unauthenticated call.
+
+        The provider is also passed explicitly (``model_provider``).
+        LangChain's ``init_chat_model`` cannot infer a provider from
+        the bare ``MiniMax-M3`` model id, even though MiniMax is
+        reached via an Anthropic-protocol endpoint
+        (``$ANTHROPIC_BASE_URL``). Declaring the provider here routes
+        the call through :class:`langchain_anthropic.ChatAnthropic`,
+        which the Anthropic SDK drives against the configured base URL.
+        """
         from langchain.agents import create_agent
         from langchain.chat_models import init_chat_model
 
+        from stock_analysis_agent.conf.settings import get_settings
+
+        settings = get_settings()
         model = init_chat_model(
             self._model,
             temperature=self._temperature,
             max_tokens=self._max_tokens,
+            api_key=settings.api_key,
+            model_provider=settings.provider,
         )
         middleware = [_ToolRetryMiddleware(max_retries=self._max_retries)]
         return create_agent(
@@ -129,7 +163,7 @@ class BaseAgent:
         messages: list[BaseMessage],
         *,
         config: RunnableConfig | None = None,
-    ) -> Iterator[dict[str, Any]]:
+    ) -> Iterator[StreamEvent]:
         """Stream LangChain events from a fresh agent run.
 
         Uses a background thread with a private event loop to drive
@@ -155,7 +189,7 @@ class BaseAgent:
         async def _drain() -> None:
             try:
                 async for event in graph.astream_events(
-                    {"messages": list(messages)},
+                    cast(InputAgentState, {"messages": list(messages)}),
                     version="v2",
                     config=resolved_config,
                 ):
@@ -190,7 +224,7 @@ class BaseAgent:
         messages: list[BaseMessage],
         *,
         config: RunnableConfig | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncIterator[StreamEvent]:
         """Async stream of LangChain events from a fresh agent run.
 
         Builds a fresh graph on each call and consumes its
@@ -200,7 +234,7 @@ class BaseAgent:
         graph = self._build_graph()
         resolved_config = self._resolve_config(config)
         async for event in graph.astream_events(
-            {"messages": list(messages)},
+            cast(InputAgentState, {"messages": list(messages)}),
             version="v2",
             config=resolved_config,
         ):

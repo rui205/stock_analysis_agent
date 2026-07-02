@@ -117,8 +117,8 @@ class StockAnalysisAgent(BaseAgent):
             _SITE_LIST_PROVIDER.value = resolved_sites
 
         tools = [_get_stock_snapshot, load_skill]
-        if include_web_search:
-            tools.append(_web_search)
+        # if include_web_search:
+        #     tools.append(_web_search)
         if include_shell_tool:
             tools.append(run_command)
 

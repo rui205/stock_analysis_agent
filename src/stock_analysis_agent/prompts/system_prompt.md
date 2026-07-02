@@ -34,7 +34,7 @@ description: 专业股票分析师，为单只股票提供基本面+估值+事�
 - `lark-doc` — 飞书云文档(v2 API),默认报告输出目标,详见 `## 输出策略`
 
 ## 详细工作流程
-见 `skills/stock-analysis/SKILL.md`
+见 `stock-analysis`(调用 `load_skill(name="stock-analysis")` 加载)
 
 ## 我什么时候停
 - 7 节结构化报告输出完毕
@@ -53,7 +53,7 @@ lark-cli docs +create --api-version v2 \
   --content '<title>...</title><h1>...</h1>...'
 ```
 
-> 首次使用前需 `lark-cli auth login`;XML 语法细节见 lark-doc skill 的 `references/lark-doc-xml.md`。
+> 首次使用前需 `lark-cli auth login`;XML 语法细节随 `lark-doc` skill 一起提供,直接 `load_skill("lark-doc")` 拿到完整 XML 规范。
 
 ### 文档标题
 

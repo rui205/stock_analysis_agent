@@ -26,9 +26,17 @@ DEFAULT_SYSTEM_PROMPT: str = (
 )
 
 DEFAULT_SITE_LIST: list[str] = [
-    "https://duckduckgo.com/html/",
+    # Order matters for tie-breaking: 360 returns the most content per
+    # query in our environment, so it is tried first. m.baidu.com is the
+    # mobile Baidu endpoint — the desktop endpoint returns a captcha
+    # page for any non-cookied client, but mobile does not. Bing
+    # (302 → cn.bing.com) is the fallback that consistently returns
+    # parseable HTML. The two DuckDuckGo endpoints are removed: the
+    # `duckduckgo.com` domain is unreachable from this environment
+    # (ConnectTimeout) and returned ConnectError on every attempt.
+    "https://www.so.com/s",
+    "https://m.baidu.com/s",
     "https://www.bing.com/search",
-    "https://html.duckduckgo.com/html/",
 ]
 
 DEFAULT_CACHE_DIR: str = "~/.cache/stock-analysis-agent"

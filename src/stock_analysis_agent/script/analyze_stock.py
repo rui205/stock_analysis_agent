@@ -13,6 +13,7 @@ Exit codes:
     2 — agent output failed JSON / pydantic validation.
     3 — ``ToolExecutionError`` from the agent.
 """
+# pyright: reportUnusedFunction=false
 from __future__ import annotations
 
 import argparse
@@ -23,8 +24,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from langchain_core.messages import HumanMessage
-from pydantic import ValidationError
+from langchain_core.messages import BaseMessage, HumanMessage
 
 from stock_analysis_agent.agent.analysis_schema import StockAnalysis
 from stock_analysis_agent.agent.exceptions import ToolExecutionError
@@ -355,11 +355,13 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--recursion-limit", type=int, default=30,
+        "--recursion-limit", type=int, default=6,
         help=(
             "LangGraph recursion limit for the agent loop. Each tool call "
-            "consumes one step; raise this if analysis needs many web searches. "
-            "Default 30 (LangChain typical). Lower for faster fail-fast tests."
+            "consumes one step. Default 6 matches StockAnalysisAgent's own "
+            "default — chosen so a runaway search loop fails fast instead of "
+            "spinning through 30 steps before erroring. Raise this if the "
+            "agent genuinely needs more than 6 round-trips."
         ),
     )
     parser.add_argument(
@@ -371,27 +373,6 @@ def _build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
-
-
-def _log_event(event: dict) -> None:
-    kind = event.get("event", "")
-    name = event.get("name", "")
-    if kind == "on_tool_start":
-        logger.info("[tool-start] %s args=%s", name, event["data"].get("input"))
-    elif kind == "on_tool_end":
-        out = event["data"].get("output")
-        snippet = repr(out)[:200] if out is not None else "None"
-        logger.info("[tool-end]   %s output=%s", name, snippet)
-    elif kind == "on_chat_model_start":
-        logger.debug("[llm-start] %s", name)
-    elif kind == "on_chat_model_end":
-        msg = event["data"].get("output", {})
-        content = getattr(msg, "content", "")
-        if isinstance(content, str) and content.strip():
-            logger.debug("[llm-text] %s", content[:200])
-        tool_calls = getattr(msg, "tool_calls", []) or []
-        for tc in tool_calls:
-            logger.debug("[llm-tool] -> %s(%s)", tc.get("name"), tc.get("args"))
 
 
 def run(args: argparse.Namespace) -> int:
@@ -421,7 +402,7 @@ def run(args: argparse.Namespace) -> int:
     # LLM-side lark-doc output policy in the bundled prompt is the
     # canonical delivery channel now; we don't parse, render, or write
     # anything from here.
-    messages = [HumanMessage(
+    messages: list[BaseMessage] = [HumanMessage(
         content=f"请按 system prompt 的 schema 给出 {args.symbol} 的分析报告。",
     )]
     try:
@@ -445,8 +426,8 @@ def run(args: argparse.Namespace) -> int:
                 output = event.get("data", {}).get("output", {})
                 for tc in getattr(output, "tool_calls", None) or []:
                     name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
-                    args = tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", None)
-                    tool_calls.append((str(name), repr(args)[:200]))
+                    tool_args = tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", None)
+                    tool_calls.append((str(name), repr(tool_args)[:200]))
     except ToolExecutionError as e:
         logger.error("agent tools failed: %s", e)
         return EXIT_TOOL
@@ -464,8 +445,8 @@ def run(args: argparse.Namespace) -> int:
             print(f"  {k}: {c}")
         print("\n========== LLM TOOL CALLS ==========")
         if tool_calls:
-            for name, args in tool_calls:
-                print(f"  {name}({args[:200]})")
+            for tool_name, tool_args in tool_calls:
+                print(f"  {tool_name}({tool_args[:200]})")
         else:
             print("  (none)")
 

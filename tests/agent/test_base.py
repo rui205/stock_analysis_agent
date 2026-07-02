@@ -64,6 +64,84 @@ def test_base_agent_max_tokens_default_is_32768() -> None:
 
 
 # ---------------------------------------------------------------------------
+# settings conf wiring — model defaults + api_key binding
+# ---------------------------------------------------------------------------
+
+
+def test_base_agent_default_model_comes_from_settings() -> None:
+    """The default model identifier must equal ``conf.DEFAULT_MODEL``
+    so :mod:`conf.settings` stays the single source of truth."""
+    from stock_analysis_agent.conf.settings import DEFAULT_MODEL
+
+    assert _NoopAgent().model == DEFAULT_MODEL
+
+
+def test_base_agent_default_temperature_comes_from_settings() -> None:
+    """The default temperature mirrors ``conf.DEFAULT_TEMPERATURE``."""
+    from stock_analysis_agent.conf.settings import DEFAULT_TEMPERATURE
+
+    assert _NoopAgent().temperature == DEFAULT_TEMPERATURE
+
+
+def test_base_agent_build_graph_passes_api_key_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_build_graph`` must source the API key from ``$ANTHROPIC_API_KEY``
+    via :func:`stock_analysis_agent.conf.settings.get_settings` and pass
+    it to ``init_chat_model``. We stub ``langchain.chat_models`` directly
+    so the assertion runs offline — no live model call, no provider
+    resolution needed for this test."""
+    import langchain.chat_models as chat_models_module
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-supplied-key")
+
+    # The settings loader is module-level cached; clear it so the env
+    # change above is honored (an earlier test may have warmed the cache).
+    from stock_analysis_agent.conf import settings as settings_module
+    settings_module._cached_settings.cache_clear()
+    try:
+        captured: dict = {}
+
+        def _fake_init(model: str, **kwargs):  # type: ignore[no-untyped-def]
+            captured["model"] = model
+            captured.update(kwargs)
+            return object()  # placeholder; graph build only inspects kwargs
+
+        monkeypatch.setattr(chat_models_module, "init_chat_model", _fake_init)
+
+        agent = _NoopAgent(model="override-model", max_tokens=512)
+        agent._build_graph()  # real path; settings + chat_models are patched
+
+        assert captured["model"] == "override-model"
+        assert captured["api_key"] == "env-supplied-key"
+        assert captured["max_tokens"] == 512
+        assert captured["model_provider"] == "anthropic"
+    finally:
+        settings_module._cached_settings.cache_clear()
+
+
+def test_base_agent_build_graph_raises_when_api_key_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no ``ANTHROPIC_API_KEY`` in env, ``_build_graph`` must raise
+    :class:`MissingAPIKeyError` before any LLM call is attempted."""
+    from stock_analysis_agent.conf.settings import MissingAPIKeyError
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    # The settings loader is module-level cached; clear it so the env
+    # delete above is honored (an earlier test may have warmed the cache).
+    from stock_analysis_agent.conf import settings as settings_module
+    settings_module._cached_settings.cache_clear()
+    try:
+        agent = _NoopAgent()
+        with pytest.raises(MissingAPIKeyError):
+            agent._build_graph()
+    finally:
+        settings_module._cached_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
 # _resolve_config — recursion_limit injection
 # ---------------------------------------------------------------------------
 
