@@ -30,6 +30,7 @@ from stock_analysis_agent.tools.market_data import (
     _SOURCES_PROVIDER,
     _get_stock_snapshot,
 )
+from stock_analysis_agent.tools.read_file import read_file
 from stock_analysis_agent.tools.shell import run_command
 from stock_analysis_agent.tools.skill import load_skill
 from stock_analysis_agent.tools.web_search import (
@@ -46,7 +47,7 @@ class StockAnalysisAgent(BaseAgent):
     """LLM-driven stock analysis agent.
 
     Bundles the ``get_stock_snapshot`` (multi-source quote), ``web_search``,
-    ``load_skill``, and (opt-in) ``run_command`` tools. The system
+    ``load_skill``, ``read_file``, and (opt-in) ``run_command`` tools. The system
     prompt is **caller-supplied** — pass ``system_prompt=`` to define
     the output contract the LLM should follow. This class never infers
     a default prompt, so different callers can target different output
@@ -75,7 +76,7 @@ class StockAnalysisAgent(BaseAgent):
         cache_dir: str | Path | None = None,
         cache_ttl: float | None = DEFAULT_CACHE_TTL,
         max_retries: int = 3,
-        recursion_limit: int = 6,
+        recursion_limit: int = 50,
         **kwargs: Any,
     ) -> None:
         if not symbol:
@@ -116,11 +117,11 @@ class StockAnalysisAgent(BaseAgent):
             _WS_CACHE_PROVIDER.value = self._cache
             _SITE_LIST_PROVIDER.value = resolved_sites
 
-        tools = [_get_stock_snapshot, load_skill]
+        tools = [load_skill, read_file, run_command]
         # if include_web_search:
         #     tools.append(_web_search)
-        if include_shell_tool:
-            tools.append(run_command)
+        # if include_shell_tool:
+        #     tools.append(run_command)
 
         super().__init__(
             system_prompt=system_prompt,

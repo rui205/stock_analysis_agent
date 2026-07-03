@@ -199,10 +199,10 @@ def test_empty_symbol_is_rejected() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_default_recursion_limit_is_six() -> None:
-    """Default is 6 — corresponds to ~3 ReAct iterations (each iteration
-    traverses 2 graph nodes). Subclasses can override."""
-    assert _agent().recursion_limit == 6
+def test_default_recursion_limit_is_fifty() -> None:
+    """Default is 50 — large enough for the bundled stock-analyst workflow
+    (~8 tool calls plus intermediate LLM decisions). Subclasses can override."""
+    assert _agent().recursion_limit == 50
 
 
 def test_custom_recursion_limit_is_stored() -> None:
@@ -219,4 +219,4 @@ def test_recursion_limit_propagates_to_resolved_config() -> None:
     """``stream`` / ``astream`` must surface the default to the graph
     even when the caller passes ``config=None``."""
     agent = _agent()
-    assert agent._resolve_config(None) == {"recursion_limit": 6}
+    assert agent._resolve_config(None) == {"recursion_limit": 50}

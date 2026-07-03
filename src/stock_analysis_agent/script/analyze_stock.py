@@ -355,13 +355,13 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--recursion-limit", type=int, default=6,
+        "--recursion-limit", type=int, default=50,
         help=(
             "LangGraph recursion limit for the agent loop. Each tool call "
-            "consumes one step. Default 6 matches StockAnalysisAgent's own "
-            "default — chosen so a runaway search loop fails fast instead of "
-            "spinning through 30 steps before erroring. Raise this if the "
-            "agent genuinely needs more than 6 round-trips."
+            "consumes 2–3 graph nodes (LLM decision → tool execution → back to "
+            "LLM), so the bundled stock-analyst workflow — ~8 tool calls plus "
+            "intermediate decisions — needs a budget of around 30–50 steps. "
+            "Default 50 matches StockAnalysisAgent's own default."
         ),
     )
     parser.add_argument(
