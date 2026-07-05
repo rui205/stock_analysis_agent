@@ -68,3 +68,4 @@ skills-lock.json
 output/
 docs/
 skill/**/miaoxiang/
+*.pyc
