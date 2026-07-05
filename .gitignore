@@ -67,3 +67,4 @@ skills-lock.json
 # Runtime output from CLI scripts (e.g. analyze_stock.py writes reports here)
 output/
 docs/
+skill/**/miaoxiang/
