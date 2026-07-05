@@ -288,10 +288,12 @@ def test_prompt_file_exists() -> None:
 
 
 def test_load_system_prompt_returns_bundled_prompt() -> None:
-    """The helper returns the bundled ``system_prompt.md`` as a string.
+    """The helper returns the bundled ``system_prompt.md`` with the
+    ``<!-- TOOL_INDEX -->`` placeholder replaced by an auto-generated
+    catalog of every self-built @tool.
 
-    The current prompt is a flat policy document with no template
-    placeholders — the helper is a thin file read, not a format step.
+    The static file is a policy document with one template placeholder;
+    the loader injects the dynamic catalog at that marker.
     """
     prompt = _load_system_prompt()
     assert isinstance(prompt, str)
@@ -301,13 +303,56 @@ def test_load_system_prompt_returns_bundled_prompt() -> None:
         "expected the lark-doc output policy section that was added in "
         "the previous commit"
     )
+    # The marker must have been replaced — no raw placeholder leaks.
+    assert "<!-- TOOL_INDEX -->" not in prompt, (
+        "TOOL_INDEX placeholder was not expanded by _load_system_prompt"
+    )
+
+
+def test_load_system_prompt_injects_tool_index_with_every_tool() -> None:
+    """The injected tool catalog must list every self-built @tool.
+
+    The catalog is auto-generated from each tool's ``args_schema`` plus
+    a hand-curated ``_TOOL_OUTPUTS`` entry — both pieces are required
+    for a tool to surface here.
+    """
+    from stock_analysis_agent.tools.registry import get_tool_index
+
+    prompt = _load_system_prompt()
+    for entry in get_tool_index():
+        assert f"### `{entry['name']}`" in prompt, (
+            f"tool section missing from prompt: {entry['name']!r}"
+        )
+        # The `**output**:` block is the most stable signal — every
+        # tool emits it and the registered output spec always has
+        # text.
+        assert "**output**:" in prompt
+
+
+def test_load_system_prompt_tool_inputs_table_is_injected() -> None:
+    """The injected tool inputs table must surface parameter types.
+
+    The LLM uses the type column to decide which tools accept a given
+    shape of argument. We assert that the table header lands in the
+    rendered prompt and that the run_command inputs (the richest
+    shape — four params of mixed required/optional) all appear.
+    """
+    prompt = _load_system_prompt()
+    assert "| name | type | required | description |" in prompt, (
+        "tool inputs table header is missing from prompt"
+    )
+    for param in ("command", "argv", "cwd", "timeout"):
+        assert f"| `{param}` |" in prompt, (
+            f"tool inputs table is missing row for {param!r}"
+        )
 
 
 def test_load_system_prompt_takes_no_arguments() -> None:
-    """The helper must be callable with zero arguments now that the
-    prompt has no template placeholders.
+    """The helper must be callable with zero arguments — runtime
+    parameters flow through StockAnalysisAgent, not through the prompt.
 
-    Guards against accidental re-introduction of placeholder logic.
+    Guards against accidental re-introduction of placeholder parameters
+    (e.g. ``symbol=``) on the helper.
     """
     sig = inspect.signature(_load_system_prompt)
     assert len(sig.parameters) == 0, (

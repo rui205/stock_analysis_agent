@@ -33,6 +33,10 @@ description: 专业股票分析师，为单只股票提供基本面+估值+事�
 - `report-search` — 投研研报
 - `lark-doc` — 飞书云文档(v2 API),默认报告输出目标,详见 `## 输出策略`
 
+每个 tool 的 name / description / inputs / output 都在下方目录里，按需调用。`load_skill(name="<skill-name>")` 加载完整 SKILL.md。
+
+<!-- TOOL_INDEX -->
+
 ## 详细工作流程
 见 `stock-analysis`(调用 `load_skill(name="stock-analysis")` 加载)
 

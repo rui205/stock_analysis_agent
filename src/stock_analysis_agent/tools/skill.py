@@ -8,10 +8,9 @@ when it needs detailed instructions for a specific task (e.g. formatting
 from __future__ import annotations
 
 from pathlib import Path
-import string
-from typing import Literal
 
-from langchain.tools import tool
+from langchain_core.tools import tool
+from pydantic import BaseModel, Field
 
 # Module-level constants — resolved once at import time.
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -48,7 +47,46 @@ def _read_skill(name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-@tool("load_skill")
+class LoadSkillInput(BaseModel):
+    """Input schema for the ``load_skill`` tool.
+
+    The ``name`` argument is free-form — any directory under
+    ``src/<package>/skill/<name>/`` that contains a ``SKILL.md`` is
+    accepted. The schema deliberately does not use a ``Literal`` type
+    so the LLM can discover and load skills that are added after the
+    agent's tool wiring is built.
+    """
+
+    name: str = Field(
+        description=(
+            "Skill name — must match a directory under "
+            "`src/stock_analysis_agent/skill/<name>/` containing a "
+            "`SKILL.md` file. Examples: `lark-doc`, "
+            "`stock-snapshot-format`. Unknown names raise "
+            "`FileNotFoundError` with the available list."
+        ),
+        min_length=1,
+    )
+
+
+@tool(
+    "load_skill",
+    description=(
+        "Load a project-level skill's full SKILL.md as Markdown. Use this "
+        "ONLY after deciding which skill you need — the system prompt's "
+        "## 我的工具 section already lists every bundled skill's name "
+        "and one-line purpose. Call `load_skill(name=...)` when that "
+        "summary is not enough to produce the structured output the "
+        "user asked for (e.g. formatting `get_stock_snapshot` data as "
+        "a company profile, or invoking 飞书云文档 via `lark-cli`). "
+        "The skill name must match a directory under "
+        "`src/stock_analysis_agent/skill/<name>/`; an unknown name "
+        "raises FileNotFoundError and lists the available skills. To "
+        "read a skill's `references/*.md` or scripts, use the separate "
+        "`read_file` tool."
+    ),
+    args_schema=LoadSkillInput,
+)
 def load_skill(
     name: str,
 ) -> str:
@@ -72,16 +110,16 @@ def load_skill(
         command; the agent still needs a tool wrapper to actually spawn
         ``lark-cli`` (this tool only returns the documentation).
 
-    Args:
-        name: The skill name. Any skill whose ``SKILL.md`` exists under
-            ``src/<package>/skill/`` is accepted.
-
     Returns:
-        The full Markdown content of the skill's ``SKILL.md``. The LLM
-        should follow these instructions to produce the formatted output
-        for the user.
+        The full Markdown content of the skill's ``SKILL.md`` as a
+        ``str``. The LLM should follow these instructions to produce
+        the formatted output for the user.
+
+    Raises:
+        FileNotFoundError: ``name`` does not match a bundled skill.
+            The error message lists the available skills.
     """
     return _read_skill(name)
 
 
-__all__ = ["load_skill", "_read_skill"]
+__all__ = ["LoadSkillInput", "load_skill", "_read_skill"]

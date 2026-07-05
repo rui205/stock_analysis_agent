@@ -29,6 +29,10 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from stock_analysis_agent.agent.analysis_schema import StockAnalysis
 from stock_analysis_agent.agent.exceptions import ToolExecutionError
 from stock_analysis_agent.agent.stock_analysis import StockAnalysisAgent
+from stock_analysis_agent.tools.registry import (
+    format_tool_index_markdown,
+    get_tool_index,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -136,17 +140,24 @@ def _extract_json_object(text: str) -> str:
 def _load_system_prompt() -> str:
     """Load the system prompt from ``prompts/system_prompt.md``.
 
-    The bundled template is a flat policy document with no template
-    placeholders, so this helper is a thin read — no substitution step.
-    Runtime parameters (symbol, peer inclusion, web-search availability)
-    are passed directly to :class:`StockAnalysisAgent` instead, where
-    they control tool wiring rather than prompt content.
+    The bundled template is a flat policy document with one template
+    placeholder (``<!-- TOOL_INDEX -->``) where the auto-generated
+    tool catalog is injected. The catalog is built by introspecting
+    every self-built ``@tool``'s ``args_schema`` Pydantic model plus
+    a hand-curated return-shape entry from
+    :data:`tools.registry._TOOL_OUTPUTS`, so adding a new tool is a
+    one-line drop-in (no prompt edit required). Runtime parameters
+    (symbol, peer inclusion, web-search availability) are passed
+    directly to :class:`StockAnalysisAgent` instead, where they
+    control tool wiring rather than prompt content.
 
     Raises:
         FileNotFoundError: if the bundled ``system_prompt.md`` is missing
             (e.g. the wheel was mis-built and excluded it).
     """
-    return _PROMPT_FILE.read_text(encoding="utf-8")
+    template = _PROMPT_FILE.read_text(encoding="utf-8")
+    tool_doc = format_tool_index_markdown(get_tool_index())
+    return template.replace("<!-- TOOL_INDEX -->", tool_doc)
 
 
 def render_markdown(a: StockAnalysis) -> str:
@@ -355,7 +366,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--recursion-limit", type=int, default=50,
+        "--recursion-limit", type=int, default=100,
         help=(
             "LangGraph recursion limit for the agent loop. Each tool call "
             "consumes 2–3 graph nodes (LLM decision → tool execution → back to "

@@ -5,7 +5,8 @@ import asyncio
 from typing import Any, Generic, TypeVar
 
 import httpx
-from langchain.tools import tool
+from langchain_core.tools import tool
+from pydantic import BaseModel, Field
 
 from stock_analysis_agent.agent.exceptions import ToolExecutionError
 from stock_analysis_agent.memory.file_cache import _FileCache
@@ -152,15 +153,69 @@ _SITE_LIST_PROVIDER: _Provider[list[str]] = _Provider()
 _CACHE_PROVIDER: _Provider[_FileCache | None] = _Provider()
 
 
+class WebSearchInput(BaseModel):
+    """Input schema for the ``web_search`` tool.
+
+    A single ``query`` string is required — it is fanned out to every
+    site in the agent-configured ``site_list`` (so.com, m.baidu.com,
+    bing.com by default) and the responses are concatenated.
+    """
+
+    query: str = Field(
+        description=(
+            "Search keyword / natural-language query. Sent as the "
+            "`q` parameter to every site in the configured "
+            "`site_list`. Keep it concise — long queries hit URL "
+            "length limits on some sites."
+        ),
+        min_length=1,
+    )
+
+
 # The explicit name drops the leading underscore so the LLM sees the
-# tool as "web_search", not "_web_search".
-@tool("web_search")
-async def _web_search(query: str) -> str:
+# tool as "web_search", not "_web_search". The leading underscore is a
+# convention to mark "implementation, not the public name"; static
+# analysers that can't see through the @tool decorator will flag it as
+# unused — we suppress the warning here. The function IS used: it's
+# imported in ``tools/__init__.py`` and reached via the @tool object.
+@tool(
+    "web_search",
+    description=(
+        "Search the configured site list (so.com, m.baidu.com, "
+        "bing.com by default) for `query` and return aggregated "
+        "plain text. Fans out concurrently (asyncio.gather) and "
+        "caches per-site responses to disk via `_FileCache`. Sites "
+        "that error or return a CAPTCHA page surface as "
+        "`[error: ...]` segments in the output rather than aborting "
+        "the search; if every site fails the tool raises "
+        "`ToolExecutionError` so the retry middleware can act. The "
+        "returned string is the concatenation `[site]\\ntext\\n` "
+        "blocks separated by blank lines."
+    ),
+    args_schema=WebSearchInput,
+)
+async def _web_search(query: str) -> str:  # pyright: ignore[reportUnusedFunction]
     """Search the configured site list for `query` and return aggregated text.
 
-    Returns a plain-text concatenation of snippets from each configured
-    site. Sites that error are mentioned in the output but do not abort
-    the search.
+    Returns:
+        Plain-text concatenation of snippets from each configured
+        site, formatted as::
+
+            [<site-1>]
+            <text-1>
+
+            [<site-2>]
+            <text-2>
+
+            ...
+
+        Per-site failures appear as
+        ``[error: <ExceptionClass>: <msg>]`` segments; CAPTCHA
+        responses appear as ``[error: captcha page returned]``.
+
+    Raises:
+        ToolExecutionError: Every site in the configured list failed
+            (caught by the retry middleware).
     """
     sites = _SITE_LIST_PROVIDER.get()
     cache = _CACHE_PROVIDER.get()

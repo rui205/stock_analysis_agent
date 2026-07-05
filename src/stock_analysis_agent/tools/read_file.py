@@ -14,11 +14,34 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from langchain.tools import tool
+from langchain_core.tools import tool
+from pydantic import BaseModel, Field
 
 # Module-level constants — resolved once at import time.
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]  # src/<package>/
 _PROJECT_ROOT = _PACKAGE_ROOT.parent.parent           # repo root (pyproject.toml)
+
+
+class ReadFileInput(BaseModel):
+    """Input schema for the ``read_file`` tool.
+
+    The single ``path`` argument is required and resolved against the
+    project root. Absolute paths that resolve inside the project root
+    are also accepted; ``..`` segments that escape the root are
+    rejected at runtime by the underlying implementation.
+    """
+
+    path: str = Field(
+        description=(
+            "Project-root-relative path to the text file, e.g. "
+            "`src/stock_analysis_agent/skill/lark-doc/SKILL.md`. "
+            "Absolute paths that resolve inside the project root are "
+            "also accepted. `..` segments that escape the root raise "
+            "`ValueError`. Binary files are NOT supported — pass "
+            "text-only."
+        ),
+        min_length=1,
+    )
 
 
 def _read_file(path: str) -> str:
@@ -56,7 +79,21 @@ def _read_file(path: str) -> str:
     return target.read_text(encoding="utf-8")
 
 
-@tool("read_file")
+@tool(
+    "read_file",
+    description=(
+        "Read a UTF-8 text file under the project root and return its "
+        "content as a string. Use this to consult skill reference files "
+        "(e.g. `src/stock_analysis_agent/skill/lark-doc/references/"
+        "lark-doc-xml.md`), source modules, or any other project file "
+        "the user has pointed you at. The path is resolved relative to "
+        "the project root; absolute paths and `..` segments that escape "
+        "the project root are rejected with ValueError, and directories "
+        "raise IsADirectoryError. Binary files are NOT supported — pass "
+        "text-only files."
+    ),
+    args_schema=ReadFileInput,
+)
 def read_file(path: str) -> str:
     """Read a UTF-8 file under the project root and return its content.
 
@@ -67,19 +104,17 @@ def read_file(path: str) -> str:
     root; absolute paths and ``..`` segments that escape the project
     root are rejected with ``ValueError``.
 
-    Args:
-        path: Path to the file, relative to the project root. Example:
-            ``"src/stock_analysis_agent/skill/lark-doc/SKILL.md"``.
-
     Returns:
-        The file's content as a UTF-8 string.
+        The file's content as a UTF-8 ``str``. Binary inputs may
+        raise ``UnicodeDecodeError`` — pass text-only files.
 
     Raises:
-        ValueError: ``path`` is empty or escapes the project root.
+        ValueError: ``path`` is empty or escapes the project root
+            (path-traversal guard).
         IsADirectoryError: The resolved path is a directory.
         FileNotFoundError: The file does not exist.
     """
     return _read_file(path)
 
 
-__all__ = ["read_file", "_read_file"]
+__all__ = ["ReadFileInput", "read_file", "_read_file"]

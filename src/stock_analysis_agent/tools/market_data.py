@@ -7,6 +7,8 @@ import json
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
+from pydantic import BaseModel, Field
+
 from stock_analysis_agent.memory.file_cache import _FileCache
 from stock_analysis_agent.tools.web_search import _Provider
 
@@ -674,10 +676,74 @@ async def _fetch_and_concat(
     return result
 
 
-from langchain.tools import tool  # noqa: E402
+from langchain_core.tools import tool  # noqa: E402
 
 
-@tool("get_stock_snapshot")
+class GetStockSnapshotInput(BaseModel):
+    """Input schema for the ``get_stock_snapshot`` tool.
+
+    The ``symbol`` is the only required field; the rest control which
+    data sources are queried and whether peer-company comparison is
+    included. Returned as a nested ``dict[str, Any]`` (serialized to
+    JSON by LangChain) — see the tool description for the exact shape.
+    """
+
+    symbol: str = Field(
+        description=(
+            "Standard code in `<code>.<market>` format. Allowed "
+            "markets: `HK` (港股, e.g. `02319.HK`), `SH` (沪市, e.g. "
+            "`600519.SH`), `SZ` (深市, e.g. `000001.SZ`). Unknown "
+            "markets raise `ValueError`."
+        ),
+        min_length=1,
+    )
+    sources: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional subset of data sources to query. Allowed values: "
+            "`tushare`, `akshare`, `mootdx`. `None` or empty list means "
+            "query ALL sources configured by the agent (typically all "
+            "three). Per-source failures do NOT abort the call — they "
+            "are surfaced as `{error: {...}}` blocks in the result."
+        ),
+    )
+    include_peers: bool = Field(
+        default=True,
+        description=(
+            "If `True`, also look up the stock's industry and fetch "
+            "the top `peer_count` peer companies for comparison "
+            "(akshare source only). Set to `False` to skip peer "
+            "detection."
+        ),
+    )
+    peer_count: int = Field(
+        default=2,
+        ge=0,
+        le=10,
+        description=(
+            "How many top peers (by market cap) to include in the "
+            "`peers` block. Only meaningful when `include_peers=True`. "
+            "Range 0..10; default 2."
+        ),
+    )
+
+
+@tool(
+    "get_stock_snapshot",
+    description=(
+        "Fetch a comprehensive stock snapshot from multiple Chinese-"
+        "market data sources (tushare / akshare / mootdx) and return a "
+        "structured nested dict. Fans out to all configured sources "
+        "concurrently (asyncio.gather); per-source failures are "
+        "surfaced as `{error: {type, message}}` blocks rather than "
+        "raised. The dict carries: top-level `<symbol>` → per-source "
+        "`{data, row_index}` blocks; `fetched_at` (ISO 8601 in "
+        "Asia/Shanghai); and `peers` (when `include_peers=True`) keyed "
+        "by peer symbol. The result is serialized to JSON before "
+        "reaching the LLM."
+    ),
+    args_schema=GetStockSnapshotInput,
+)
 async def _get_stock_snapshot(
     symbol: str,
     sources: list[str] | None = None,
@@ -686,19 +752,6 @@ async def _get_stock_snapshot(
 ) -> dict[str, Any]:
     """Fetch a comprehensive stock snapshot from multiple Chinese-market
     data sources and return a structured nested dict.
-
-    Args:
-        symbol: Standard code in '<code>.<market>' format, e.g.
-            '02319.HK', '600519.SH', '000001.SZ'.
-        sources: Optional subset of data sources to query. Allowed
-            values: 'tushare', 'akshare', 'mootdx'. None or empty list
-            means query ALL sources configured via the module-level
-            _SOURCES_PROVIDER (typically all three).
-        include_peers: If True, also look up the stock's industry and
-            fetch the top `peer_count` peer companies for comparison.
-            Peer rendering is done through the akshare source.
-        peer_count: How many top peers (by market cap) to include.
-            Only meaningful when include_peers=True. Range: 0..10.
 
     Returns:
         A nested dict with these top-level keys:
@@ -710,6 +763,12 @@ async def _get_stock_snapshot(
 
         LangChain's ``@tool`` machinery serializes this dict to JSON
         before handing it to the LLM.
+
+    Raises:
+        ValueError: ``symbol`` is missing the ``.`` market suffix, or
+            the market segment is not in ``{"HK", "SH", "SZ"}``.
+        ToolExecutionError: Every primary source returned an error
+            block (caught by the retry middleware).
     """
     resolved_sources: tuple[SourceName, ...]
     if not sources:

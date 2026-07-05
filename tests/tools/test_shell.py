@@ -113,6 +113,31 @@ def test_run_subprocess_rejects_empty_command() -> None:
         _run_subprocess("", ["echo"], cwd=None, timeout=10)
 
 
+def test_run_subprocess_rejects_command_with_whitespace() -> None:
+    """The exact LLM failure mode from the run-logs:
+
+    LLM called ``run_command(command='echo "triggering get_stock_snapshot..."',
+    argv=[])`` — the entire shell line was stuffed into ``command``. Without
+    this guard, ``subprocess.run`` would try to look up
+    ``echo "triggering get_stock_snapshot..."`` on PATH and fail with a
+    confusing ``FileNotFoundError``. The error message should instead name
+    the actual mistake and hint at the correct split.
+    """
+    with pytest.raises(ValueError, match="command='echo'") as excinfo:
+        _run_subprocess('echo "triggering get_stock_snapshot via skill tools"',
+                        [], cwd=None, timeout=10)
+    msg = str(excinfo.value)
+    assert "argv" in msg, (
+        "error message should hint at splitting into command + argv"
+    )
+
+
+def test_run_subprocess_rejects_command_with_quotes() -> None:
+    """A bare quoted arg concatenated into ``command`` is the same mistake."""
+    with pytest.raises(ValueError, match="shell command"):
+        _run_subprocess("ls 'foo bar'", [], cwd=None, timeout=10)
+
+
 def test_run_subprocess_rejects_non_list_argv() -> None:
     """A string for ``argv`` is a common LLM mistake — must raise clearly."""
     with pytest.raises(TypeError, match="argv"):

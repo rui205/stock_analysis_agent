@@ -17,7 +17,8 @@ import logging
 import subprocess
 from pathlib import Path
 
-from langchain.tools import tool
+from langchain_core.tools import tool
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -81,13 +82,30 @@ def _run_subprocess(
         stderr streams.
 
     Raises:
-        ValueError: ``command`` is empty.
+        ValueError: ``command`` is empty, or it contains whitespace /
+            quotes / shell metacharacters — a common LLM mistake is
+            to pass an entire shell command (e.g.
+            ``'echo "..."'``) as the single ``command`` argument.
+            Split it: ``command="echo"``,
+            ``argv=['...']``.
         TypeError: ``argv`` is not a list of strings.
         FileNotFoundError: ``command`` is not on ``PATH`` (and not an
             absolute path to an existing executable).
     """
     if not command or not command.strip():
         raise ValueError("command cannot be empty")
+    # A program name is a single token — spaces, quotes, or shell
+    # metacharacters in ``command`` mean the LLM concatenated an entire
+    # shell command into the field instead of splitting it into
+    # ``command`` + ``argv``. We reject this with a precise hint so the
+    # model can correct itself on the next turn.
+    if any(ch.isspace() or ch in {'"', "'", '`', '&', '|', ';', '>', '<'} for ch in command):
+        raise ValueError(
+            f"command {command!r} looks like a shell command, not a program "
+            "name — pass the executable in `command` and the rest as "
+            "separate entries in `argv` (e.g. command='echo', "
+            "argv=['hello']). The tool does NOT invoke a shell."
+        )
     if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv):
         raise TypeError("argv must be a list of strings")
 
@@ -132,7 +150,78 @@ def _run_subprocess(
     )
 
 
-@tool("run_command")
+class RunCommandInput(BaseModel):
+    """Input schema for the ``run_command`` tool.
+
+    The four-field schema mirrors the function signature verbatim.
+    The tool does NOT spawn a shell — ``command`` is a single program
+    name (or absolute path), ``argv`` is the argument list, and
+    timeout/cwd control execution.
+    """
+
+    command: str = Field(
+        description=(
+            "The executable name or absolute path (e.g. `\"lark-cli\"`). "
+            "Pass the program name ONLY — flags and arguments belong "
+            "in `argv`. Never pass a shell pipeline (`a && b`, `a | b`) "
+            "here; the tool does not invoke a shell."
+        ),
+        min_length=1,
+    )
+    argv: list[str] = Field(
+        description=(
+            "Argument list as a list of strings, passed without shell "
+            "expansion. Quoting, glob characters, and newlines are "
+            "preserved verbatim. Example: to run "
+            "`lark-cli docs +create --content <xml>...`, pass "
+            "`[\"docs\", \"+create\", \"--content\", \"<xml>...\"]`."
+        ),
+    )
+    cwd: str | None = Field(
+        default=None,
+        description=(
+            "Working directory for the subprocess. `None` (default) "
+            "means use the parent process's current directory. "
+            "Absolute paths and `~`-prefixed paths are expanded."
+        ),
+    )
+    timeout: int = Field(
+        default=DEFAULT_TIMEOUT_SECONDS,
+        ge=1,
+        description=(
+            "Seconds before the subprocess is killed. Default 60. "
+            "On timeout the result carries a "
+            "`=== TIMEOUT (after <N>s) ===` marker instead of an "
+            "exit code."
+        ),
+    )
+
+
+@tool(
+    "run_command",
+    description=(
+        "Run a CLI subprocess (lark-cli, git, curl, jq, ls, ...) and "
+        "return its stdout, stderr, and exit code as a formatted text "
+        "block. The canonical use case is invoking "
+        "`lark-cli docs +create --content <xml>...` to publish an "
+        "analysis report as a 飞书 cloud document. `argv` is passed "
+        "as a list — NO shell expansion, so quoting/glob/newlines "
+        "are preserved verbatim. stdout/stderr are truncated at 30KB; "
+        "default timeout is 60s (subprocess is killed on timeout). "
+        "`command` must be on PATH or an absolute path.\n\n"
+        "ARGUMENT SHAPE — common LLM mistakes to avoid: pass "
+        "`command` as the single program name (e.g. `\"lark-cli\"`) "
+        "and split flags into `argv` as separate strings — do NOT "
+        "concatenate flags into `command`, do NOT pass shell "
+        "pipelines (`a && b`, `a | b`) to `command` (there is no "
+        "shell). Example: to run "
+        "`lark-cli docs +fetch --api-version v2 --doc X`, call with "
+        "`command=\"lark-cli\"`, "
+        "`argv=[\"docs\", \"+fetch\", \"--api-version\", \"v2\", "
+        "\"--doc\", \"X\"]`."
+    ),
+    args_schema=RunCommandInput,
+)
 def run_command(
     command: str,
     argv: list[str],
@@ -149,13 +238,6 @@ def run_command(
     ``argv`` is passed as a list — **no** shell expansion. Quoting, glob
     characters, and newlines are preserved verbatim. Stdout and stderr
     are truncated if longer than 30 KB.
-
-    Args:
-        command: The program name or absolute path (e.g. ``"lark-cli"``).
-        argv: Argument list as a list of strings. E.g.
-            ``["docs", "+create", "--content", "<title>...</title>..."]``.
-        cwd: Working directory. ``None`` means use the parent process cwd.
-        timeout: Seconds before the subprocess is killed (default 60).
 
     Returns:
         A formatted text block::
@@ -176,4 +258,10 @@ def run_command(
     return _run_subprocess(command, argv, cwd, timeout)
 
 
-__all__ = ["run_command", "_run_subprocess", "MAX_OUTPUT_BYTES", "DEFAULT_TIMEOUT_SECONDS"]
+__all__ = [
+    "RunCommandInput",
+    "run_command",
+    "_run_subprocess",
+    "MAX_OUTPUT_BYTES",
+    "DEFAULT_TIMEOUT_SECONDS",
+]
