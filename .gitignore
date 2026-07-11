@@ -70,3 +70,4 @@ docs/
 skill/**/miaoxiang/
 *.pyc
 /miaoxiang/
+**/__pycache__/
