@@ -36,11 +36,9 @@ from typing import TypedDict, cast
 
 from langchain_core.tools import BaseTool
 
-from stock_analysis_agent.tools.market_data import _get_stock_snapshot
 from stock_analysis_agent.tools.read_file import read_file
 from stock_analysis_agent.tools.shell import run_command
 from stock_analysis_agent.tools.skill import load_skill
-from stock_analysis_agent.tools.web_search import _web_search
 
 
 class ToolParamSpec(TypedDict):
@@ -290,8 +288,6 @@ def list_tools() -> list[BaseTool]:
     :data:`_TOOL_OUTPUTS`.
     """
     all_tools: list[BaseTool] = [
-        # _get_stock_snapshot,
-        # _web_search,
         load_skill,
         read_file,
         run_command,

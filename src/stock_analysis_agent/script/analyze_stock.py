@@ -322,7 +322,7 @@ def run(args: argparse.Namespace) -> int:
         from collections import Counter
         logger.info("========== EVENT KINDS ({len(event_kinds)}) ==========")
         for k, c in Counter(event_kinds).most_common():
-            print(f"  {k}: {c}")
+            logger.info(f"  {k}: {c}")
         logger.info("========== LLM TOOL CALLS ==========")
         if tool_calls:
             for tool_name, tool_args in tool_calls:

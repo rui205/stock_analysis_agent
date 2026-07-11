@@ -8,12 +8,11 @@ should emit; this class only guarantees that whatever schema the prompt
 asks for will reach the LLM, the tools will be available, and the
 providers will be correctly initialized.
 
-Note: ``get_stock_snapshot`` and ``web_search`` are no longer wired into
-``StockAnalysisAgent`` (they are being prepared for deletion). The
-``include_web_search`` parameter remains as a no-op so existing callers
-do not break; the corresponding provider writes are still made at
-construction time. Removal of the parameter and the snapshot /
-``_web_search`` tooling is tracked separately.
+Note: ``get_stock_snapshot`` has been removed (the ``market_data``
+module is gone); the ``include_peers`` parameter remains as a no-op so
+existing callers do not break. ``web_search`` is still wired (the
+``include_web_search`` parameter and the corresponding provider writes
+remain active) because ``agent.deepsearch`` continues to depend on it.
 
 Typical callers (e.g. ``script.analyze_stock``) load a prompt template
 from disk and pass it in.
@@ -31,19 +30,12 @@ from stock_analysis_agent.agent.deepsearch import (
     DEFAULT_SITE_LIST,
 )
 from stock_analysis_agent.memory.file_cache import _FileCache
-from stock_analysis_agent.tools.market_data import (
-    ALL_SOURCES,
-    _CACHE_PROVIDER as _MD_CACHE_PROVIDER,
-    _SOURCES_PROVIDER,
-    _get_stock_snapshot,
-)
 from stock_analysis_agent.tools.read_file import read_file
 from stock_analysis_agent.tools.shell import run_command
 from stock_analysis_agent.tools.skill import load_skill
 from stock_analysis_agent.tools.web_search import (
     _CACHE_PROVIDER as _WS_CACHE_PROVIDER,
     _SITE_LIST_PROVIDER,
-    _web_search,
 )
 
 # Defaults (site list, cache dir, cache ttl) are imported from
@@ -110,16 +102,13 @@ class StockAnalysisAgent(BaseAgent):
         self._include_web_search = include_web_search
         self._include_shell_tool = include_shell_tool
 
-        # Single-instance provider writes — both @tool callables read
-        # these via .get() on each invocation. ``market_data`` and
-        # ``web_search`` each declare their own ``_CACHE_PROVIDER`` (they
-        # are different module-level singletons), so we have to write to
-        # both. Collapsing them into one shared singleton is a follow-up.
+        # Single-instance provider writes — the ``web_search`` @tool reads
+        # these via .get() on each invocation. ``include_peers`` is now a
+        # no-op (the snapshot provider is gone); the parameter is kept so
+        # existing callers continue to compile.
         # When ``include_web_search`` is False, skip the web_search providers
         # entirely so the LLM cannot accidentally call a half-initialized
         # _web_search.
-        _SOURCES_PROVIDER.value = ALL_SOURCES
-        _MD_CACHE_PROVIDER.value = self._cache
         if include_web_search:
             _WS_CACHE_PROVIDER.value = self._cache
             _SITE_LIST_PROVIDER.value = resolved_sites

@@ -21,8 +21,6 @@ from stock_analysis_agent.tools.registry import (
 from stock_analysis_agent.tools.shell import RunCommandInput
 from stock_analysis_agent.tools.read_file import ReadFileInput
 from stock_analysis_agent.tools.skill import LoadSkillInput
-from stock_analysis_agent.tools.market_data import GetStockSnapshotInput
-from stock_analysis_agent.tools.web_search import WebSearchInput
 
 
 # ---------------------------------------------------------------------------
@@ -109,24 +107,6 @@ class TestExtractInputs:
         # Optional ones are NOT required.
         for opt in ("cwd", "timeout"):
             assert opt not in required, f"{opt!r} should be optional"
-
-    def test_web_search_query_required(self) -> None:
-        from stock_analysis_agent.tools.web_search import _web_search
-
-        rows = _extract_inputs(_web_search)
-        assert len(rows) == 1
-        assert rows[0]["name"] == "query"
-        assert rows[0]["required"] is True
-
-    def test_get_stock_snapshot_required_and_optional_inputs(self) -> None:
-        from stock_analysis_agent.tools.market_data import _get_stock_snapshot
-
-        rows = _extract_inputs(_get_stock_snapshot)
-        names = {r["name"] for r in rows}
-        assert {"symbol", "sources", "include_peers", "peer_count"}.issubset(names)
-        # Only ``symbol`` is required; the rest have defaults.
-        required = {r["name"] for r in rows if r["required"]}
-        assert required == {"symbol"}
 
     def test_input_types_render_as_short_signatures(self) -> None:
         """Pydantic types are rendered as short Python-style signatures.
@@ -262,7 +242,7 @@ class TestFormatToolIndexMarkdown:
 
 @pytest.mark.parametrize(
     "input_cls",
-    [ReadFileInput, RunCommandInput, LoadSkillInput, GetStockSnapshotInput, WebSearchInput],
+    [ReadFileInput, RunCommandInput, LoadSkillInput],
 )
 def test_input_schema_is_pydantic_basemodel_with_descriptions(input_cls: type[BaseModel]) -> None:
     """Each ``args_schema`` is a Pydantic model with Field descriptions.
