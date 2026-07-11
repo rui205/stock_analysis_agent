@@ -22,7 +22,7 @@ from stock_analysis_agent.agent.analysis_schema import (
 
 def _verdict(**overrides) -> dict:
     base = {
-        "decision": "buy_in",
+        "decision": "buy",
         "decision_label": "买进",
         "confidence": "high",
         "summary": "基本面扎实,技术形态向好,建议买进。",
@@ -109,8 +109,8 @@ def _full_payload(**overrides) -> dict:
 
 
 class TestVerdict:
-    def test_accepts_all_three_decisions(self) -> None:
-        for d in ("buy_in", "watch", "no_buy"):
+    def test_accepts_all_five_decisions(self) -> None:
+        for d in ("strongly_buy", "buy", "hold", "sell", "strongly_sell"):
             Verdict(**_verdict(decision=d))
 
     def test_rejects_unknown_decision(self) -> None:
@@ -187,7 +187,7 @@ class TestActionPlan:
 def test_stock_analysis_accepts_full_payload() -> None:
     a = StockAnalysis(**_full_payload())
     assert a.symbol == "02319.HK"
-    assert a.verdict.decision == "buy_in"
+    assert a.verdict.decision == "buy"
     assert a.price_plan.current_price == 16.06
     assert a.scores.weighted_total == 6.6
     assert a.risks[0].type == "行业"

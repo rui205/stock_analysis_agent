@@ -99,27 +99,6 @@ class ToolOutputSpec(TypedDict):
 #: Per-tool return-shape metadata. Keyed by the @tool name (matches
 #: ``@tool("...")`` and ``Tool.name``).
 _TOOL_OUTPUTS: dict[str, ToolOutputSpec] = {
-    "get_stock_snapshot": {
-        "output": (
-            "`dict[str, Any]` — nested dict with: top-level `<symbol>` → "
-            "per-source `{data, row_index}` or `{error: {type, message}}` "
-            "blocks; `fetched_at` (ISO 8601 in Asia/Shanghai); `peers` "
-            "(when `include_peers=True`) → dict keyed by peer symbol. "
-            "LangChain serializes this to JSON before reaching the LLM. "
-            "Raises `ValueError` on unknown market suffix; raises "
-            "`ToolExecutionError` when every primary source errored."
-        ),
-    },
-    "web_search": {
-        "output": (
-            "`str` — plain-text concatenation of `[<site>]\\n<text>` "
-            "blocks separated by blank lines. Per-site failures surface "
-            "as `[error: <ExceptionClass>: <msg>]` segments; CAPTCHA "
-            "responses as `[error: captcha page returned]`. Raises "
-            "`ToolExecutionError` when every site failed (caught by "
-            "the retry middleware)."
-        ),
-    },
     "load_skill": {
         "output": (
             "`str` — full Markdown content of the skill's `SKILL.md` "
@@ -311,8 +290,8 @@ def list_tools() -> list[BaseTool]:
     :data:`_TOOL_OUTPUTS`.
     """
     all_tools: list[BaseTool] = [
-        _get_stock_snapshot,
-        _web_search,
+        # _get_stock_snapshot,
+        # _web_search,
         load_skill,
         read_file,
         run_command,

@@ -1,21 +1,32 @@
-"""Validates the lark-doc output policy added to system_prompt.md.
+"""Validates the system_prompt.md role / identity / stop-condition contract.
 
-The system prompt is a Markdown document consumed by an LLM, but its
-structure is mechanical enough to validate with regex / substring checks:
-the new ``## 输出策略`` section must exist, must mention lark-doc by name,
-must declare the 7-section document body, the title format, the
-"only return link" rule, and the fallback path.
+System prompt owns: role ("我是谁"), audience ("我为谁服务"), scope
+("我做 / 不做"), working principles, tool/skill catalog injection
+points, and the role-level stop conditions that promise three deliverables
++ disclaimer.
+
+System prompt does NOT own: the 7-section report format, the lark-doc
+publication command, the markdown fallback — those moved to the
+``stock-analysis`` skill and are now pinned by
+``tests/skill/test_stock_analysis_skill.py``.
 """
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
-PROMPT_PATH = Path("src/stock_analysis_agent/prompts/system_prompt.md")
+from stock_analysis_agent.script.analyze_stock import _load_system_prompt
 
 
 def _read_prompt() -> str:
-    return PROMPT_PATH.read_text(encoding="utf-8")
+    """Return the fully-rendered system prompt (template + injected indexes).
+
+    Tests check the **rendered** prompt — that is what the LLM actually
+    sees at runtime. The raw template (with ``<!-- SKILL_INDEX -->`` /
+    ``<!-- TOOL_INDEX -->`` placeholders) is a build artifact; asserting
+    on it would miss dynamic content (e.g. lark-doc is now injected via
+    SKILL_INDEX, not hardcoded in the template).
+    """
+    return _load_system_prompt()
 
 
 def _section(text: str, heading: str) -> str:
@@ -57,112 +68,35 @@ def test_lark_doc_tool_entry_uses_backtick_name() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Stop conditions — lark-doc publishing must be required
+# Stop conditions — role-level deliverables only
 # ---------------------------------------------------------------------------
 
 
-def test_stop_conditions_include_lark_doc_publish() -> None:
-    """The '## 我什么时候停' section must require successful lark-doc publishing."""
+def test_stop_conditions_declare_three_promises_and_disclaimer() -> None:
+    """The '## 我什么时候停' section must keep the four role-level promises:
+    投资建议 / 估值区间 / 风险点 / 免责声明, plus a soft delegation to the
+    ``stock-analysis`` skill for delivery specifics.
+    """
     text = _read_prompt()
     section_body = _section(text, "我什么时候停")
     assert section_body, "missing '## 我什么时候停' section"
-    assert "飞书" in section_body or "lark" in section_body.lower(), (
-        "stop conditions must reference lark/飞书 (either lark-doc publish "
-        "or the explicit fallback path)"
-    )
-    # The original three stop conditions must still be present.
-    for needle in ("7 节结构化报告", "投资建议", "免责声明"):
-        assert needle in section_body, f"original stop condition missing: {needle}"
-
-
-# ---------------------------------------------------------------------------
-# Output policy section — structure
-# ---------------------------------------------------------------------------
-
-
-def test_output_policy_section_exists() -> None:
-    """A new '## 输出策略' section must exist (placed after '## 我什么时候停')."""
-    text = _read_prompt()
-    section_body = _section(text, "输出策略")
-    assert section_body, "missing '## 输出策略' section"
-
-
-def test_output_policy_mentions_lark_doc_create_command() -> None:
-    """The output policy must instruct the agent to use lark-doc's +create command."""
-    text = _read_prompt()
-    section_body = _section(text, "输出策略")
-    assert "+create" in section_body, (
-        "output policy must reference the lark-doc `+create` shortcut"
-    )
-    assert "--api-version v2" in section_body, (
-        "output policy must declare the v2 API flag (lark-doc is v2-only)"
+    for needle in ("投资建议", "估值区间", "风险点", "免责声明"):
+        assert needle in section_body, f"role-level stop condition missing: {needle}"
+    assert "skill" in section_body.lower(), (
+        "stop section must soft-delegate delivery to the stock-analysis skill"
     )
 
 
-def test_output_policy_declares_title_format() -> None:
-    """The output policy must declare the document title format with `{symbol}` and a date."""
-    text = _read_prompt()
-    section_body = _section(text, "输出策略")
-    assert "{symbol}" in section_body, (
-        "output policy must include `{symbol}` as part of the title template"
-    )
-    assert "YYYY-MM-DD" in section_body or "YYYY" in section_body, (
-        "output policy must include a date placeholder (e.g. {YYYY-MM-DD})"
-    )
-
-
-def test_output_policy_enumerates_seven_sections() -> None:
-    """The output policy must enumerate the 7 document sections in order.
-
-    Note: "基本面 + 技术面分析" is one spec section but is asserted as two
-    distinct substrings (基本面 and 技术面) so the assertion list has 8 items.
+def test_stop_conditions_do_not_leak_specific_format() -> None:
+    """The stop section must NOT enumerate the 7 section names or the lark-cli
+    command — those now live in the skill. This catches accidental
+    back-sliding into the dual-source pattern.
     """
     text = _read_prompt()
-    section_body = _section(text, "输出策略")
-    # The 7 spec sections; "基本面 + 技术面分析" is checked as two substrings.
-    expected_substrings = [
-        "执行摘要",
-        "公司画像",
-        "多维评分",
-        "价位计划",
-        "基本面",
-        "技术面",  # 配套 "基本面 + 技术面分析"
-        "风险",
-        "免责声明",
-    ]
-    for needle in expected_substrings:
-        assert needle in section_body, f"section {needle!r} not in 输出策略"
-
-
-# ---------------------------------------------------------------------------
-# Conversation output — must be terse (link only)
-# ---------------------------------------------------------------------------
-
-
-def test_output_policy_mandates_link_only_in_conversation() -> None:
-    """The output policy must explicitly say: only return link in conversation, not full body."""
-    text = _read_prompt()
-    section_body = _section(text, "输出策略")
-    assert "链接" in section_body or "link" in section_body.lower(), (
-        "output policy must say the agent returns a link (not the full report body)"
-    )
-    # The "禁止" / "不要" prohibition language must be present.
-    assert "禁止" in section_body or "不要" in section_body, (
-        "output policy must contain an explicit prohibition (e.g. '禁止在对话内重复 7 节正文')"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Fallback path — must be declared for lark-cli failures
-# ---------------------------------------------------------------------------
-
-
-def test_output_policy_declares_fallback() -> None:
-    """The output policy must declare what happens when lark-doc creation fails."""
-    text = _read_prompt()
-    section_body = _section(text, "输出策略")
-    # The fallback should mention degradation / failure handling.
-    fallback_signals = ("降级", "失败", "fallback", "错误", "重试")
-    assert any(sig in section_body.lower() for sig in fallback_signals), (
-        "output policy must declare a fallback path for lark-doc failures"
+    section_body = _section(text, "我什么时候停")
+    forbidden = ("执行摘要", "多维评分", "价位计划", "数据声明与免责声明", "+create")
+    leaks = [s for s in forbidden if s in section_body]
+    assert not leaks, (
+        f"stop section must not enumerate report format / lark-cli command; "
+        f"found: {leaks}"
     )

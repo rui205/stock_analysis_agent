@@ -1,53 +1,73 @@
 ---
 name: stock-analysis
-description: 单只股票的综合分析工作流。输入股票代码和市场，输出 7 节结构化 markdown 报告，含核心结论、估值定位、关键事件、机构观点、风险提示。
+description: Use when the user asks to analyze a single stock (个股 / 单只股票 / 这支票怎么样 / 帮我看看 / 给个买卖建议), wants a comprehensive valuation + fundamentals + events + analyst views report on one ticker across A-shares / HK / US / ETF, or needs a fair-value range and a buy/hold/sell verdict for one symbol. Do NOT use for industry / sector screening (→ mx-stocks-screener), index ETF basket construction, macro research, or pure technical chart pattern analysis.
 ---
 
 # Stock Analysis Workflow
 
-## Inputs
-- **股票代码 + 市场**：A 股 / 港股 / 美股 / ETF
-- **分析重点（可选）**：用户特别想看的角度
-- **持仓状态（可选）**：是否已持仓、持仓成本、持有时长
+Single-ticker deep dive: snapshot → valuation positioning → recent events → analyst views → verdict + risks. Output goes to 飞书云文档 (see `lark-doc`), not the chat.
 
-代码 / 市场缺失时追问一句再开始——估值口径在 A/港/美差异很大。
+## Inputs to collect
+
+- **股票代码 + 市场** (required): A 股 / 港股 / 美股 / ETF
+- **分析重点** (optional): 用户特别想看的角度 (估值 / 业绩拐点 / 政策受益)
+- **持仓状态** (optional): 是否已持仓、持仓成本、持有时长、目标仓位
+
+**缺失追问**:代码或市场缺失时追问一句——估值口径在 A/港/美差异很大(A 股 PE-TTM、港股常用 PB+股息率、美股 GAAP vs Non-GAAP);持仓已 deep-ITM/OTM 时,焦点会从"估值"变成"止损/加仓"。
+
+## Quick reference
+
+| 场景 | 关键调整 |
+|------|---------|
+| 美股 / 中概股 | DCF 用 USD;Non-GAAP EPS 与 GAAP EPS 至少各给一行 |
+| 港股 | PB + 股息率为主,PE 需注意 HKD 计价 |
+| 未盈利 / 亏损公司 | 跳过 PE,改 PS / EV/EBITDA / PB |
+| ETF / 指数基金 | 跳过 Step 1 公司画像 + Step 5 个股估值,改"跟踪误差 + 折溢价 + 成分股 top10" |
+| 已持仓 (含成本) | Step 5 必须含**止损位 / 加仓位**,不只是"目标价" |
+| 宏观冲击期 (政策/加息) | 额外跑一次 `mx-macro-data` 拿宏观背景,并入风险章节 |
+| `mx-finance-search` 大面积无结果 | 走降级路径:省略事件/机构观点章节,列出缺失项,报告顶部注明 |
 
 ## Procedure
 
-### Step 1. 基本面快照（mx-finance-data）
-- 公司基础信息（行业、主营、上市时间、市值）
-- 实时行情（最新价、当日/周/月/年涨跌幅）
-- 核心财务（近 3 年营收、归母净利、ROE、毛利率、净利率、负债率、自由现金流）
-- 分红与回购历史
+### Step 1. 基本面快照 (mx-finance-data)
+公司信息、实时行情、近 3 年核心财务 (营收 / 归母净利 / ROE / 毛利率 / 净利率 / 负债率 / FCF)、分红与回购历史。
 
-> 估值倍数（PE/PB）必须用盈利质量解读。低 PE 可能是真低估，也可能是利润即将崩塌。
+> 估值倍数必须用盈利质量解读——低 PE 可能是真低估,也可能是利润即将崩塌。
 
-### Step 2. 估值定位（mx-finance-data + mx-stocks-screener）
-- **历史分位**：当前 PE-TTM / PB / PS 相对近 3 年 / 5 年的分位数（< 30% 偏低 / > 70% 偏高）
-- **同行对比**：mx-stocks-screener 拉同行业 3-5 家可比公司，PE/PB/PEG/股息率横向比
-- 亏损 / 未盈利公司改用 PS、EV/EBITDA、PB，并标注"暂不适用 PE"
+**调用**:`load_skill(name="mx-finance-data")` 拿规范后,`python3 {baseDir}/scripts/get_data.py --query "<问句>" --indicators "<指标>"`。该 skill 在 system prompt 的 catalog 里。失败时 Step 2 估值章节标"基本面数据缺失,不可计算"。
 
-### Step 3. 公司动态（announcement-search + news-search）
-- 拉最近 90 天关键事件
-- **公告**：财报、分红、回购、增减持、解禁、重组、关联交易、监管问询
-- **新闻**：业务进展、政策影响、行业事件、高管变动
-- 按"利好 / 利空 / 中性"分类，标注信源
+### Step 2. 估值定位 (mx-finance-data + mx-stocks-screener)
+- **历史分位**:当前 PE-TTM / PB / PS 相对近 3-5 年的分位数 (<30% 偏低 / >70% 偏高)
+- **同行对比**:`mx-stocks-screener` 拉同行业 3-5 家可比公司,PE/PB/PEG/股息率横向比
+- **市场差异**:A 股直接 PE-TTM / PB;港股 PB + 股息率为主;美股 GAAP 与 Non-GAAP 估值并列;亏损公司改 PS / EV/EBITDA / PB 并标注"暂不适用 PE"
 
-### Step 4. 机构观点（report-search）
-- 拉最近 60 天主流机构研报
-- 评级分布（买入/增持/中性/减持的家数）
-- 目标价区间（最高 / 最低 / 中位数）
-- 共识 EPS 预测与一致预期增速
-- 重点拆 1-2 篇最新深度报告的逻辑
+**调用**:`mx-stocks-screener` 同样在 catalog 里,`load_skill` 后跑 `python3 {baseDir}/scripts/get_data.py --query "<问句>" --select-type "<A 股|港股|美股>"`。
 
-### Step 5. 综合判断（不调 skill）
-基于 Step 1-4 的事实，给三个核心结论：
+### Step 3. 公司动态 (mx-finance-search)
+拉最近 90 天关键事件,按"利好 / 利空 / 中性"分类,每条带信源:财报、分红、回购、增减持、解禁、重组、关联交易、监管问询、业务进展、政策影响、行业事件、高管变动。
 
-1. **合理估值区间**：
-   - **相对估值法**：历史分位中位数 ± 同行均值给 PE/PB 区间 × EPS/BVPS = 价格区间
-   - **DCF 简版**（仅适用盈利稳定的成熟公司）：近 3 年平均 FCF、8-10% 永续增速、10% 折现率做敏感性
+**调用**:`load_skill(name="mx-finance-search")` 后用自然语言一句话拉:
+```bash
+python3 {baseDir}/scripts/get_data.py "<股票名> <代码> 最近90天公告与重要事件"
+```
+`mx-finance-search` 是 catalog 里**唯一**做"公告+新闻+研报"统一检索的 skill——之前用的 `announcement-search` / `news-search` 不可用,统一用它替代。
+
+### Step 4. 机构观点 (mx-finance-search)
+拉最近 60 天主流机构研报:评级分布、目标价区间、共识 EPS、深度报告逻辑。
+
+**调用**:同样用 `mx-finance-search`,只是 query 改成:
+```bash
+python3 {baseDir}/scripts/get_data.py "<股票名> <代码> 最近60天券商研报与目标价"
+```
+之前用的 `report-search` 不可用,统一用 `mx-finance-search` 替代。
+
+### Step 5. 综合判断 (不调 skill)
+
+1. **合理估值区间**:
+   - **相对估值法**:历史分位中位数 ± 同行均值给 PE/PB 区间 × EPS/BVPS = 价格区间
+   - **DCF 简版** (仅适用盈利稳定的成熟公司):近 3 年平均 FCF、8-10% 永续增速、10% 折现率做敏感性
    - 取两种方法的**重叠区间**为最终合理估值
-2. **投资建议**（5 档）：
+2. **投资建议 (5 档)**:
 
    | 档位 | 触发条件 |
    |---|---|
@@ -57,50 +77,85 @@ description: 单只股票的综合分析工作流。输入股票代码和市场�
    | 卖出 | 当前价 ≥ 合理估值上限 或 基本面明显恶化 |
    | 强烈卖出 | 估值高估 + 基本面恶化 + 重大利空叠加 |
 
-3. **关键风险**：3-5 条最可能打破判断的风险点（业绩不及预期 / 政策反转 / 估值杀 / 流动性 / 解禁等），每条带"触发条件"和"对结论的影响"
+3. **关键风险**:3-5 条最可能打破判断的风险点,每条带"触发条件 → 对结论的影响"。
+4. **(若已持仓) 持仓行动建议**:持仓成本 × 当前价 → 浮盈/浮亏百分比决定"持有/加仓/减仓/止损";给**止损位** (成本 -1×ATR 或关键支撑) 与**加仓位** (合理估值下限 ±10%)。与第 2 项矛盾时,以此项优先——用户真实问题是"我该怎么办"。
 
-## Output Contract
+## Output contract
 
-输出**结构化 markdown 分析报告**，7 节：
+完成 7 节分析后,**不**在会话内输出报告正文,改用 `lark-doc` 把全量报告发布到飞书云文档,会话内**只**返回链接 + 一句话摘要。
 
-```markdown
-# <股票名称>（<代码>）投资分析
-**报告日期**：YYYY-MM-DD  **当前价**：XX  **市场**：A/港/美
+### 调用方式
 
-## 一、核心结论
-- **投资建议**：<5 档之一>
-- **合理估值区间**：XX - XX
-- **上行空间 / 下行风险**：+XX% / -XX%
-- **核心逻辑（一句话）**：...
+```bash
+lark-cli docs +create --api-version v2 \
+  --content '<title>...</title><h1>...</h1>...'
+```
 
-## 二、基本面快照
-（表格：市值、营收、净利、ROE、负债率、近 1 年涨跌幅）
+> 首次使用前需 `lark-cli auth login`;XML 语法细节随 `lark-doc` skill 一起提供,直接 `load_skill("lark-doc")` 拿到完整 XML 规范。
 
-## 三、估值定位
-- 历史分位：PE 处于近 3 年 X% 分位，PB 处于 X% 分位
-- 同行对比：vs 同行业均值 PE 高 / 低 X%
+### 文档标题
 
-## 四、关键事件
-### 利好
-- ...
-### 利空
-- ...
-### 中性
-- ...
+```
+[{symbol}] 股票分析报告 · {YYYY-MM-DD}
+```
 
-## 五、机构观点
-- 共识评级：买入 X 家 / 增持 X 家 / 中性 X 家
-- 目标价区间：XX - XX（中位数 XX）
-- 核心分歧：...
+例:`[600519] 股票分析报告 · 2026-06-29`
 
-## 六、风险提示
-1. <风险点 1>：触发条件 → 对结论的影响
-2. ...
+### 文档正文(7 节,XML 格式)
 
-## 七、给不同持仓周期的建议
-- **短线（< 3 个月）**：...
-- **中线（3-12 个月）**：...
-- **长线（> 1 年）**：...
+1. **执行摘要** — `<callout type="info">` + 表格:投资建议(decision_label + confidence) + 估值区间 + 目标价 + 当前价
+2. **公司画像** — `<h2>` + 段落:主营业务、行业地位、近期重要事件(每条带来源标注);"七段式渲染"按 `stock-snapshot-format` skill
+3. **多维评分** — 表格:4 维度(fundamental / technical / news_catalyst / peer_positioning)+ 加权总分
+4. **价位计划** — 表格 + 列表:current_price / entry_zone / add_zone / target_price / stop_loss / risk_reward_ratio / time_horizon
+5. **基本面 + 技术面分析** — `<h3>` + bullets:highlights、concerns 分点列,带数据来源
+6. **风险与行动方案** — 风险表格(type 6 选 1 + severity)+ 仓位建议 + review_triggers
+7. **数据声明与免责声明** — `<callout type="warning">`:数据源列表 + "本报告由 AI 生成,不构成投资建议"
 
----
-*本报告基于公开数据，不构成投资建议，投资有风险，决策需谨慎。*
+### 会话内输出(只回链接)
+
+成功路径下,会话内**只**输出:
+
+```
+📄 [{symbol}] 股票分析报告已生成
+
+🔗 <飞书文档 URL>
+
+摘要:<一句话,30-80 字,包含 verdict + 关键价位>
+```
+
+**禁止**在对话内重复 7 节正文、把整段 XML 粘到对话里、或输出 markdown 形式的报告(那是文档的事,不是对话的事)。
+
+### 判断分流
+
+- 本轮用户消息含 `feishu.cn/docx/` URL 或 docx token → 改用 `lark-cli docs +update --command append/overwrite --api-version v2 --doc <URL_or_token> --content <...>` 写入该文档
+- 否则 → 走 `+create` 新建路径
+
+### 错误处理(降级)
+
+| 场景 | 处理 |
+|------|------|
+| `lark-cli` 未安装 / 认证失败 | **降级**:会话内输出 7 节报告 markdown 正文,顶部加 `⚠️ 飞书文档创建失败(<err>),以下为会话内输出` |
+| 文档创建成功但内容截断/部分 block 报错 | 重试 1 次(同一个 `--content` 整体重发);仍失败则降级同上 |
+| 用户本轮明确说"不要建文档,直接说结论" | 跳过 `lark-doc` 步骤,会话内只输出结论摘要(不输出 7 节正文) |
+| 网络/限流错误 | 最多重试 2 次(指数退避 1s/3s);失败后降级 |
+
+降级路径在每轮都要准备好,不要让 lark-cli 报错时无所适从。
+
+## When NOT to use this skill
+
+- **行业扫描 / 板块筛选** → `mx-stocks-screener`
+- **纯技术面 K 线 / 形态分析** → 专门的图表 skill;本 skill 不覆盖技术指标
+- **组合配置 / 多标的仓位** → 本 skill 只看单只
+- **宏观研究 / 大类资产** → `mx-macro-data`
+- **基金定投 / 推荐式荐股** → 不在 system_prompt 的"我做"清单内
+
+## Common mistakes
+
+- **直接给"目标价 XX 元"点预测** → 违反原则,只给区间
+- **5 档建议缺触发条件** → 每档必须可验证
+- **风险章节只写"市场风险"空话** → 每条必须有"触发条件 → 对结论的影响"链路
+- **Step 3-4 数据缺失时静默跳过** → 在"数据声明"节列出缺失项,不能省略
+- **DCF 用在未盈利公司** → 仅限"盈利稳定的成熟公司"
+- **忽略市场差异** → 美股用 HKD EPS / 港股用 A 股 PE 分位 / ETF 当个股估都会算错
+- **已持仓用户只给"目标价",不给止损 / 加仓位** → 用户真实问题是仓位管理
+- **走 markdown 而不是 lark-doc** → 默认必须走飞书云文档,markdown 仅降级

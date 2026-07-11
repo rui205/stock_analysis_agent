@@ -27,11 +27,30 @@ from pydantic import BaseModel, Field
 
 
 class Verdict(BaseModel):
-    """The LLM's investment decision for the stock."""
+    """The LLM's investment decision for the stock.
 
-    decision: Literal["buy_in", "watch", "no_buy"]
+    The 5-tier enum mirrors the decision vocabulary in
+    ``prompts/system_prompt.md`` (强烈买入 / 买入 / 持有 / 卖出 / 强烈卖出).
+    The English ``decision`` is the machine-readable enum; the Chinese
+    ``decision_label`` is the user-facing label — they must agree.
+
+    Mapping::
+
+        strongly_buy  → 强烈买入
+        buy           → 买入
+        hold          → 持有
+        sell          → 卖出
+        strongly_sell → 强烈卖出
+    """
+
+    decision: Literal["strongly_buy", "buy", "hold", "sell", "strongly_sell"]
     decision_label: str = Field(
-        min_length=1, description="中文标签,如 买进 / 观望 / 不买进"
+        min_length=1,
+        description=(
+            "中文标签,必须与 decision 一一对应: "
+            "strongly_buy→强烈买入, buy→买入, hold→持有, "
+            "sell→卖出, strongly_sell→强烈卖出"
+        ),
     )
     confidence: Literal["high", "medium", "low"]
     summary: str = Field(

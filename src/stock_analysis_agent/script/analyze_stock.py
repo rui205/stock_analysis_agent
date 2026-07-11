@@ -33,6 +33,10 @@ from stock_analysis_agent.tools.registry import (
     format_tool_index_markdown,
     get_tool_index,
 )
+from stock_analysis_agent.tools.skill import (
+    format_skill_index_markdown,
+    get_skill_index,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -140,168 +144,33 @@ def _extract_json_object(text: str) -> str:
 def _load_system_prompt() -> str:
     """Load the system prompt from ``prompts/system_prompt.md``.
 
-    The bundled template is a flat policy document with one template
-    placeholder (``<!-- TOOL_INDEX -->``) where the auto-generated
-    tool catalog is injected. The catalog is built by introspecting
-    every self-built ``@tool``'s ``args_schema`` Pydantic model plus
-    a hand-curated return-shape entry from
-    :data:`tools.registry._TOOL_OUTPUTS`, so adding a new tool is a
-    one-line drop-in (no prompt edit required). Runtime parameters
-    (symbol, peer inclusion, web-search availability) are passed
-    directly to :class:`StockAnalysisAgent` instead, where they
-    control tool wiring rather than prompt content.
+    The bundled template is a flat policy document with two template
+    placeholders that get auto-injected at load time:
+
+    * ``<!-- SKILL_INDEX -->`` — every skill under ``skill/*/SKILL.md``,
+      rendered as ``name + one-line description`` from each file's
+      YAML frontmatter. Adding a new skill is a one-line drop-in (no
+      prompt edit required).
+    * ``<!-- TOOL_INDEX -->`` — the @tool catalog, built by introspecting
+      every self-built tool's ``args_schema`` Pydantic model plus a
+      hand-curated return-shape entry from
+      :data:`tools.registry._TOOL_OUTPUTS`.
+
+    Runtime parameters (symbol, peer inclusion, web-search availability)
+    are passed directly to :class:`StockAnalysisAgent` instead, where
+    they control tool wiring rather than prompt content.
 
     Raises:
         FileNotFoundError: if the bundled ``system_prompt.md`` is missing
             (e.g. the wheel was mis-built and excluded it).
     """
     template = _PROMPT_FILE.read_text(encoding="utf-8")
+    skill_doc = format_skill_index_markdown(get_skill_index())
     tool_doc = format_tool_index_markdown(get_tool_index())
-    return template.replace("<!-- TOOL_INDEX -->", tool_doc)
-
-
-def render_markdown(a: StockAnalysis) -> str:
-    """Render a :class:`StockAnalysis` to a Markdown string.
-
-    Section order mirrors the structure of :class:`StockAnalysis`:
-
-    1. Title + timestamp
-    2. Verdict (the headline decision + confidence + one-liner)
-    3. Price plan (table of current / entry / add / target / stop)
-    4. Scores (compact list of 0-10 ratings)
-    5. Company profile (the 七段式 text)
-    6. Fundamental analysis (highlights / concerns)
-    7. Technical analysis (highlights / concerns)
-    8. News catalysts
-    9. Peer compare
-    10. Risks (table of type / description / severity)
-    11. Action plan (position size, execution steps, review triggers)
-    12. Reasoning chain (long form, kept as a blockquote)
-    """
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-    pp = a.price_plan
-    sc = a.scores
-
-    verdict_badge = f"**{a.verdict.decision_label}** (decision={a.verdict.decision}, confidence={a.verdict.confidence})"
-
-    price_table = "\n".join(
-        [
-            "| 项目 | 数值 |",
-            "| --- | --- |",
-            f"| 当前价 | {pp.current_price} |",
-            f"| 建仓区间 | {pp.entry_zone[0]} ~ {pp.entry_zone[1]} |",
-            f"| 加仓区间 | {pp.add_zone[0]} ~ {pp.add_zone[1]} |",
-            f"| 目标价 | {pp.target_price} |",
-            f"| 硬止损 | {pp.stop_loss} |",
-            f"| 预期收益 | {pp.expected_return} |",
-            f"| 风险收益比 | {pp.risk_reward_ratio} |",
-            f"| 持仓周期 | {pp.time_horizon} |",
-        ]
-    )
-
-    score_list = "\n".join(
-        [
-            f"- 基本面: {sc.fundamental}",
-            f"- 技术面: {sc.technical}",
-            f"- 消息面: {sc.news_catalyst}",
-            f"- 同行对比: {sc.peer_positioning}",
-            f"- **加权总分: {sc.weighted_total}**",
-        ]
-    )
-
-    def _dim_section(heading: str, dim) -> str:
-        lines = [f"## {heading}", ""]
-        lines.append("**亮点**")
-        if dim.highlights:
-            for h in dim.highlights:
-                lines.append(f"- {h}")
-        else:
-            lines.append("- (无)")
-        lines.append("")
-        lines.append("**隐忧**")
-        if dim.concerns:
-            for c in dim.concerns:
-                lines.append(f"- {c}")
-        else:
-            lines.append("- (无)")
-        lines.append("")
-        return "\n".join(lines)
-
-    risks_table = "\n".join(
-        [
-            "| 类型 | 严重度 | 描述 |",
-            "| --- | --- | --- |",
-            *(
-                f"| {r.type} | {r.severity} | {r.description} |"
-                for r in a.risks
-            ),
-        ]
-    ) if a.risks else "_无_"
-
-    action_lines = [
-        f"- **仓位建议**: {a.action_plan.position_size}",
-    ]
-    if a.action_plan.execution:
-        action_lines.append("- **执行步骤**:")
-        action_lines.extend(f"  - {e}" for e in a.action_plan.execution)
-    if a.action_plan.review_triggers:
-        action_lines.append("- **复核触发条件**:")
-        action_lines.extend(f"  - {t}" for t in a.action_plan.review_triggers)
-    action_block = "\n".join(action_lines)
-
-    news_block = (
-        "\n".join(f"- {n}" for n in a.news_catalysts)
-        if a.news_catalysts
-        else "_无_"
-    )
-
-    return "\n".join(
-        [
-            f"# {a.symbol} 分析报告",
-            "",
-            f"> 生成时间: {ts}",
-            "",
-            "## 投资决策",
-            "",
-            verdict_badge,
-            "",
-            f"> {a.verdict.summary}",
-            "",
-            "## 价位推算",
-            "",
-            price_table,
-            "",
-            "## 评分",
-            "",
-            score_list,
-            "",
-            "## 公司画像",
-            "",
-            a.company_profile,
-            "",
-            _dim_section("基本面分析", a.fundamental_analysis),
-            _dim_section("技术面分析", a.technical_analysis),
-            "## 近期催化",
-            "",
-            news_block,
-            "",
-            "## 同行对比",
-            "",
-            a.peer_compare,
-            "",
-            "## 风险",
-            "",
-            risks_table,
-            "",
-            "## 操作建议",
-            "",
-            action_block,
-            "",
-            "## 推理链",
-            "",
-            f"> {a.reasoning_chain}",
-            "",
-        ]
+    return (
+        template
+        .replace("<!-- SKILL_INDEX -->", skill_doc)
+        .replace("<!-- TOOL_INDEX -->", tool_doc)
     )
 
 
@@ -448,18 +317,18 @@ def run(args: argparse.Namespace) -> int:
     # event-kind histogram and the tool calls the agent issued so the
     # user can see *how* the agent got to the answer.
     if last_text:
-        print(last_text)
+        logger.info(last_text)
     if args.verbose:
         from collections import Counter
-        print(f"\n========== EVENT KINDS ({len(event_kinds)}) ==========")
+        logger.info("========== EVENT KINDS ({len(event_kinds)}) ==========")
         for k, c in Counter(event_kinds).most_common():
             print(f"  {k}: {c}")
-        print("\n========== LLM TOOL CALLS ==========")
+        logger.info("========== LLM TOOL CALLS ==========")
         if tool_calls:
             for tool_name, tool_args in tool_calls:
-                print(f"  {tool_name}({tool_args[:200]})")
+                logger.info(f"  {tool_name}({tool_args[:200]})")
         else:
-            print("  (none)")
+            logger.info("  (none)")
 
     return EXIT_OK
 

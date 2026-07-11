@@ -19,6 +19,8 @@ def test_base_agent_uses_default_system_prompt() -> None:
     """Spec test 1: BaseAgent() with no args must succeed and use the
     default system prompt constant."""
     agent = _NoopAgent()
+    print(agent.system_prompt_value)
+    print(f"DEBUG: system_prompt_value = {agent.system_prompt_value!r}")  
     assert agent.system_prompt_value == "You are a helpful assistant."
 
 

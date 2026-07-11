@@ -1,12 +1,19 @@
-"""StockAnalysisAgent: get_stock_snapshot + web_search → LLM-driven analysis.
+"""StockAnalysisAgent: LLM-driven stock analysis with skill/file/shell tooling.
 
 This is a **low-level reusable agent** — it owns the tool wiring
-(snapshot, web_search, load_skill) and the data-source / cache providers,
-but it does **not** bake in any output schema or JSON contract. The
-caller is responsible for supplying a ``system_prompt`` that defines the
-shape the LLM should emit; this class only guarantees that whatever
-schema the prompt asks for will reach the LLM, the tools will be
-available, and the providers will be correctly initialized.
+(``load_skill``, ``read_file``, opt-in ``run_command``) but does **not**
+bake in any output schema or JSON contract. The caller is responsible
+for supplying a ``system_prompt`` that defines the shape the LLM
+should emit; this class only guarantees that whatever schema the prompt
+asks for will reach the LLM, the tools will be available, and the
+providers will be correctly initialized.
+
+Note: ``get_stock_snapshot`` and ``web_search`` are no longer wired into
+``StockAnalysisAgent`` (they are being prepared for deletion). The
+``include_web_search`` parameter remains as a no-op so existing callers
+do not break; the corresponding provider writes are still made at
+construction time. Removal of the parameter and the snapshot /
+``_web_search`` tooling is tracked separately.
 
 Typical callers (e.g. ``script.analyze_stock``) load a prompt template
 from disk and pass it in.
@@ -46,13 +53,13 @@ from stock_analysis_agent.tools.web_search import (
 class StockAnalysisAgent(BaseAgent):
     """LLM-driven stock analysis agent.
 
-    Bundles the ``get_stock_snapshot`` (multi-source quote), ``web_search``,
-    ``load_skill``, ``read_file``, and (opt-in) ``run_command`` tools. The system
-    prompt is **caller-supplied** — pass ``system_prompt=`` to define
-    the output contract the LLM should follow. This class never infers
-    a default prompt, so different callers can target different output
-    schemas (e.g. a terse JSON, a structured Markdown report, a
-    multi-section company profile) without subclassing.
+    Bundles the ``load_skill``, ``read_file``, and (opt-in)
+    ``run_command`` tools. The system prompt is **caller-supplied** —
+    pass ``system_prompt=`` to define the output contract the LLM
+    should follow. This class never infers a default prompt, so
+    different callers can target different output schemas (e.g. a terse
+    JSON, a structured Markdown report, a multi-section company
+    profile) without subclassing.
 
     Construction mirrors :class:`DeepSearchAgent`: it writes into the
     module-level ``_Provider`` singletons used by the @tool callables,
@@ -117,11 +124,9 @@ class StockAnalysisAgent(BaseAgent):
             _WS_CACHE_PROVIDER.value = self._cache
             _SITE_LIST_PROVIDER.value = resolved_sites
 
-        tools = [load_skill, read_file, run_command]
-        # if include_web_search:
-        #     tools.append(_web_search)
-        # if include_shell_tool:
-        #     tools.append(run_command)
+        tools = [load_skill, read_file]
+        if include_shell_tool:
+            tools.append(run_command)
 
         super().__init__(
             system_prompt=system_prompt,

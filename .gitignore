@@ -69,3 +69,4 @@ output/
 docs/
 skill/**/miaoxiang/
 *.pyc
+/miaoxiang/

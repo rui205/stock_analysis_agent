@@ -34,23 +34,32 @@ class TestListTools:
     """Discovery: every self-built @tool callable is surfaced."""
 
     def test_list_tools_includes_every_self_built_tool(self) -> None:
-        """The five bundled @tools are all in the catalog.
+        """The three bundled @tools are all in the catalog.
 
-        Adding a sixth tool requires (a) appending it to ``list_tools``
+        Adding a fourth tool requires (a) appending it to ``list_tools``
         and (b) adding a ``_TOOL_OUTPUTS`` entry — this assertion
         catches the case where someone forgot (a).
+
+        Note: ``get_stock_snapshot`` and ``web_search`` are being prepared
+        for deletion and are intentionally absent from the catalog.
         """
         names = {t.name for t in list_tools()}
         expected = {
-            "get_stock_snapshot",
             "load_skill",
             "read_file",
             "run_command",
-            "web_search",
         }
         assert expected.issubset(names), (
             f"missing tools: {expected - names}; "
             "update list_tools() in tools/registry.py"
+        )
+        assert "get_stock_snapshot" not in names, (
+            "get_stock_snapshot should be absent from list_tools() — "
+            "it is being prepared for deletion"
+        )
+        assert "web_search" not in names, (
+            "web_search should be absent from list_tools() — "
+            "it is being prepared for deletion"
         )
 
     def test_list_tools_is_sorted(self) -> None:

@@ -1,0 +1,2 @@
+2026-07-05 18:17:16,010 - announcement_search - INFO - 搜索公告: 伊利股份 600887 最近90天公告
+2026-07-05 18:17:16,071 - announcement_search - WARNING - API调用失败，状态码: 401, Trace ID: 9de2c61b70a85160130e6c2e509bdb9fcd822991dcf3cab96980e89f9362c9d6

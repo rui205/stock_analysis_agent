@@ -4,10 +4,24 @@ Skills live in ``src/<package>/skill/<name>/SKILL.md`` and are meant to be
 consumed by the LLM agent at runtime. The agent can call :func:`load_skill`
 when it needs detailed instructions for a specific task (e.g. formatting
 ``get_stock_snapshot`` output as a company profile).
+
+Two-tier loading model, mirroring :mod:`stock_analysis_agent.tools.registry`:
+
+1. **Index** — every skill's ``name`` and one-line ``description`` from
+   the SKILL.md frontmatter is rendered into the system prompt via
+   :func:`get_skill_index` and :func:`format_skill_index_markdown`. The
+   LLM uses this catalog to decide which skill to load.
+2. **Full body** — once the model picks a skill, it calls
+   :func:`load_skill` which returns the entire SKILL.md.
+
+Adding a new skill is a one-line drop-in: drop a directory at
+``skill/<name>/SKILL.md`` with frontmatter and the index picks it up
+automatically.
 """
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TypedDict
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
@@ -16,12 +30,139 @@ from pydantic import BaseModel, Field
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 _SKILLS_DIR = _PACKAGE_ROOT / "skill"
 
-# Known skills — used to populate the error message when an unknown skill
-# is requested. The ``name`` parameter on :func:`load_skill` is a free-form
-# ``str`` (not a Literal) so the LLM can request any skill whose
-# ``SKILL.md`` exists on disk, including ones not baked into the agent's
-# tool wiring (e.g. ``lark-doc``).
-_KNOWN_SKILLS: tuple[str, ...] = ("stock-snapshot-format", "lark-doc")
+
+class SkillIndexEntry(TypedDict):
+    """One skill catalog row.
+
+    Attributes:
+        name: Skill name as exposed to the LLM (matches the
+            ``SKILL.md`` frontmatter ``name`` field, falling back to
+            the directory name when frontmatter is missing).
+        description: Purpose statement from the frontmatter
+            ``description`` field. Multi-line YAML ``|`` blocks are
+            preserved as embedded ``\\n`` so the caller can render
+            them however it likes.
+    """
+
+    name: str
+    description: str
+
+
+def _parse_frontmatter(text: str) -> dict[str, str]:
+    """Extract ``name`` and ``description`` from YAML frontmatter.
+
+    Lightweight regex-style parser — only handles the subset of YAML
+    the bundled SKILL.md files actually use:
+
+    * ``name: <value>``  — single line, no quotes.
+    * ``description: <value>``  — single line, optional double quotes.
+    * ``description: |\\n<indented block>`` — multi-line literal block.
+
+    Other keys (``version``, ``metadata``, ``requires``, …) are
+    ignored. Surrounding double quotes around single-line values are
+    stripped. This intentionally does NOT pull in PyYAML — the schema
+    is small enough to handle inline and the dependency cost isn't
+    worth it for 9 files.
+
+    Args:
+        text: Full SKILL.md text starting with the ``---`` fence.
+
+    Returns:
+        Dict with ``name`` and ``description`` keys. Missing keys
+        yield empty strings — the caller decides the fallback.
+    """
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {"name": "", "description": ""}
+    end = 1
+    while end < len(lines) and lines[end].strip() != "---":
+        end += 1
+    fm = lines[1:end]
+
+    result: dict[str, str] = {"name": "", "description": ""}
+    i = 0
+    while i < len(fm):
+        line = fm[i]
+        stripped = line.lstrip()
+        # Only top-level (column 0) ``name:`` / ``description:`` keys.
+        if not line.startswith(("name:", "description:")):
+            i += 1
+            continue
+        key, _, rest = line.partition(":")
+        rest = rest.strip()
+        if rest == "|":
+            # Multi-line literal block: capture indented lines until
+            # the next non-indented line (a new top-level key, or EOF).
+            i += 1
+            block: list[str] = []
+            while i < len(fm):
+                nxt = fm[i]
+                if nxt.startswith((" ", "\t")) and nxt.strip():
+                    block.append(nxt.strip())
+                    i += 1
+                else:
+                    break
+            result[key.strip()] = " ".join(block)
+            continue
+        # Single-line value: strip surrounding double quotes.
+        if len(rest) >= 2 and rest[0] == rest[-1] and rest[0] == '"':
+            rest = rest[1:-1]
+        result[key.strip()] = rest
+        i += 1
+    return result
+
+
+def list_skill_names() -> tuple[str, ...]:
+    """Discover every **loadable** skill directory under ``skill/``.
+
+    "Loadable" means: present on disk AND listed in
+    :data:`_LOADABLE_SKILL_NAMES`. The allowlist controls what the
+    system prompt advertises as ``## 我的工具`` — adding a skill to
+    the on-disk tree does NOT auto-promote it into the agent's
+    catalog. To promote a new skill, append its directory name to
+    :data:`_LOADABLE_SKILL_NAMES`.
+
+    Skills on disk that are NOT in the allowlist are still reachable
+    via :func:`load_skill` (e.g. internal formatters like
+    ``stock-snapshot-format``) — they're just not advertised to the
+    LLM up front.
+
+    Returns:
+        Alphabetically sorted tuple of skill directory names that
+        are both in the allowlist and present on disk.
+    """
+    if not _SKILLS_DIR.is_dir():
+        return ()
+    on_disk = {p.parent.name for p in _SKILLS_DIR.glob("*/SKILL.md")}
+    return tuple(sorted(name for name in _LOADABLE_SKILL_NAMES if name in on_disk))
+
+
+#: Allowlist of skills to advertise in the system prompt's ``## 我的工具``
+#: section. Order does not matter — :func:`list_skill_names` sorts the
+#: output. Edit this tuple to change which skills the agent sees in
+#: its catalog; skills on disk that are absent here are still
+#: loadable via :func:`load_skill` but won't appear in the index.
+_LOADABLE_SKILL_NAMES: tuple[str, ...] = (
+    # "announcement-search",
+    "lark-doc",
+    "lark-shared",
+    "mx-finance-data",
+    "mx-stocks-screener",
+    # "news-search",
+    # "report-search",
+    "stock-analysis",
+    "mx-finance-search",
+    "mx-macro-data",
+)
+
+
+#: Known skills — populated from disk at import time so the
+#: ``FileNotFoundError`` message in :func:`_read_skill` lists every
+#: bundled skill (including ones not in :data:`_LOADABLE_SKILL_NAMES`)
+#: without manual maintenance.
+_KNOWN_SKILLS: tuple[str, ...] = tuple(
+    sorted(p.parent.name for p in _SKILLS_DIR.glob("*/SKILL.md"))
+) if _SKILLS_DIR.is_dir() else ()
 
 
 def _read_skill(name: str) -> str:
@@ -45,6 +186,74 @@ def _read_skill(name: str) -> str:
             f"skill {name!r} not found at {path}; available: {available}"
         )
     return path.read_text(encoding="utf-8")
+
+
+def _read_skill_index_entry(name: str) -> SkillIndexEntry:
+    """Read one skill's SKILL.md and extract its index entry.
+
+    Falls back to the directory name and a placeholder description
+    when the file is missing or unreadable, so the catalog still
+    surfaces the skill (the LLM will see "SKILL.md missing" and skip
+    it instead of thinking it doesn't exist).
+
+    Args:
+        name: Skill directory name.
+
+    Returns:
+        :class:`SkillIndexEntry` populated from frontmatter.
+    """
+    path = _SKILLS_DIR / name / "SKILL.md"
+    if not path.is_file():
+        return SkillIndexEntry(name=name, description="(SKILL.md missing)")
+    try:
+        text = path.read_text(encoding="utf-8")
+        fm = _parse_frontmatter(text)
+    except (OSError, UnicodeDecodeError):
+        return SkillIndexEntry(name=name, description="(unreadable SKILL.md)")
+    return SkillIndexEntry(
+        name=fm.get("name") or name,
+        description=fm.get("description") or "(no description in frontmatter)",
+    )
+
+
+def get_skill_index() -> list[SkillIndexEntry]:
+    """Build the skill catalog injected into the system prompt.
+
+    Walks every directory under ``skill/``, reads its SKILL.md
+    frontmatter, and returns one entry per skill in alphabetical
+    order. Mirrors :func:`stock_analysis_agent.tools.registry.get_tool_index`.
+
+    Returns:
+        Alphabetically sorted list of :class:`SkillIndexEntry`.
+    """
+    return [_read_skill_index_entry(name) for name in list_skill_names()]
+
+
+def format_skill_index_markdown(index: list[SkillIndexEntry]) -> str:
+    """Render ``index`` as a Markdown bullet list.
+
+    Each entry renders as one bullet: ``- `<name>` — <description>``.
+    Multi-line descriptions (YAML ``|`` blocks) are collapsed into a
+    single paragraph by joining the lines with spaces, so the catalog
+    stays compact in the system prompt. The full multi-line text is
+    available via :func:`load_skill` when the LLM wants detail.
+
+    Args:
+        index: Catalog from :func:`get_skill_index`.
+
+    Returns:
+        Markdown bullet list. Empty list yields
+        ``"_(no skills available)_"``.
+    """
+    if not index:
+        return "_(no skills available)_\n"
+    lines: list[str] = []
+    for entry in index:
+        desc = " ".join(
+            line.strip() for line in entry["description"].splitlines() if line.strip()
+        )
+        lines.append(f"- `{entry['name']}` — {desc}")
+    return "\n".join(lines) + "\n"
 
 
 class LoadSkillInput(BaseModel):
@@ -74,10 +283,11 @@ class LoadSkillInput(BaseModel):
     description=(
         "Load a project-level skill's full SKILL.md as Markdown. Use this "
         "ONLY after deciding which skill you need — the system prompt's "
-        "## 我的工具 section already lists every bundled skill's name "
-        "and one-line purpose. Call `load_skill(name=...)` when that "
-        "summary is not enough to produce the structured output the "
-        "user asked for (e.g. formatting `get_stock_snapshot` data as "
+        "## 我的工具 section lists the loadable skills' name and one-line "
+        "purpose, but a few internal skills (e.g. `stock-snapshot-format`) "
+        "are reachable only via this tool. Call `load_skill(name=...)` when "
+        "the catalog summary is not enough to produce the structured output "
+        "the user asked for (e.g. formatting `get_stock_snapshot` data as "
         "a company profile, or invoking 飞书云文档 via `lark-cli`). "
         "The skill name must match a directory under "
         "`src/stock_analysis_agent/skill/<name>/`; an unknown name "
@@ -122,4 +332,13 @@ def load_skill(
     return _read_skill(name)
 
 
-__all__ = ["LoadSkillInput", "load_skill", "_read_skill"]
+__all__ = [
+    "LoadSkillInput",
+    "SkillIndexEntry",
+    "_read_skill",
+    "_read_skill_index_entry",
+    "format_skill_index_markdown",
+    "get_skill_index",
+    "list_skill_names",
+    "load_skill",
+]
