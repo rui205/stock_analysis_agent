@@ -12,10 +12,17 @@ both strategy-related tools are colocated; it depends on
 """
 from __future__ import annotations
 
+import json
+from collections.abc import Iterator
 from pathlib import Path
 
+from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
+
+from stock_analysis_agent.agent.analysis_schema import StockAnalysis
+from stock_analysis_agent.agent.exceptions import ToolExecutionError
+from stock_analysis_agent.agent.stock_analysis import StockAnalysisAgent
 
 # Resolved at import time — points at conf/strategies/. Tests may
 # monkeypatch this to a tmp dir.
@@ -105,4 +112,145 @@ def load_strategy(name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-__all__ = ["LoadStrategyInput", "_list_strategy_names", "_parse_strategy_frontmatter", "load_strategy"]
+def _extract_final_text(events: Iterator[dict]) -> str:
+    """Accumulate ``on_chat_model_stream`` text into one string."""
+    last_text = ""
+    for event in events:
+        if event.get("event") != "on_chat_model_stream":
+            continue
+        chunk = event.get("data", {}).get("chunk", {})
+        content = getattr(chunk, "content", "")
+        if isinstance(content, str) and content:
+            last_text += content
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    last_text += block.get("text", "")
+    return last_text
+
+
+def _strip_code_fence(text: str) -> str:
+    """Strip a leading/trailing markdown code fence if present."""
+    s = text.strip()
+    if not s.startswith("```"):
+        return s
+    lines = s.split("\n")
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _extract_json_object(text: str) -> str:
+    """Return the longest balanced JSON object in ``text``."""
+    decoder = json.JSONDecoder()
+    candidates: list[str] = []
+    idx = 0
+    while True:
+        start = text.find("{", idx)
+        if start < 0:
+            break
+        try:
+            _, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            idx = start + 1
+            continue
+        candidates.append(text[start:end])
+        idx = end
+    if not candidates:
+        raise ValueError("no JSON object found in agent output")
+    return max(candidates, key=len)
+
+
+def _render_analysis_summary(symbol: str, analysis: StockAnalysis) -> str:
+    """Render the key fields of ``StockAnalysis`` as a markdown summary."""
+    risks_md = "\n".join(f"- [{r.type}/{r.severity}] {r.description}" for r in analysis.risks[:3])
+    return (
+        f"# StockAnalysis 摘要 — {symbol}\n\n"
+        f"- verdict: {analysis.verdict.decision} ({analysis.verdict.decision_label}) "
+        f"confidence={analysis.verdict.confidence}\n"
+        f"- summary: {analysis.verdict.summary}\n"
+        f"- weighted_total: {analysis.scores.weighted_total}/10 "
+        f"(fundamental={analysis.scores.fundamental}, "
+        f"technical={analysis.scores.technical}, "
+        f"news={analysis.scores.news_catalyst}, "
+        f"peer={analysis.scores.peer_positioning})\n"
+        f"- current_price: {analysis.price_plan.current_price}, "
+        f"target: {analysis.price_plan.target_price}, "
+        f"stop_loss: {analysis.price_plan.stop_loss}\n"
+        f"- 主要风险:\n{risks_md or '- (无)'}\n"
+    )
+
+
+class RunAnalyzeStockInput(BaseModel):
+    """Input schema for the ``run_analyze_stock`` tool."""
+
+    symbol: str = Field(
+        min_length=1,
+        description=(
+            "Stock symbol to analyze, e.g. `600519.SH`, `02319.HK`, "
+            "`AAPL.US`. The tool runs the existing `StockAnalysisAgent` "
+            "subagent on this symbol and returns a structured summary."
+        ),
+    )
+
+
+def _run_subagent_and_collect(symbol: str) -> str:
+    """Inner helper — builds the subagent, runs it, returns raw final text."""
+    from stock_analysis_agent.script.analyze_stock import _load_system_prompt
+
+    system_prompt = _load_system_prompt()
+    sub = StockAnalysisAgent(
+        symbol=symbol,
+        system_prompt=system_prompt,
+        include_peers=True,
+        include_web_search=True,
+        include_shell_tool=False,
+        recursion_limit=50,
+    )
+    events = sub.stream([HumanMessage(f"按 system prompt 的 schema 给出 {symbol} 的分析报告。")])
+    return _extract_final_text(events)
+
+
+@tool(
+    "run_analyze_stock",
+    description=(
+        "Run the existing `StockAnalysisAgent` subagent on a stock "
+        "symbol and return a structured markdown summary of its "
+        "`StockAnalysis` output. Returns a markdown summary on success; "
+        "an `[ERROR] analyze_stock tool failed: ...` string on "
+        "`ToolExecutionError`; or `[ERROR] StockAnalysis JSON parse "
+        "failed: ...` with up to 2000 chars of raw LLM output on "
+        "validation failure."
+    ),
+    args_schema=RunAnalyzeStockInput,
+)
+def run_analyze_stock(symbol: str) -> str:
+    """Synchronously run the analyze-stock subagent and summarise the result."""
+    try:
+        last_text = _run_subagent_and_collect(symbol)
+    except ToolExecutionError as e:
+        return f"[ERROR] analyze_stock tool failed: {e}"
+
+    try:
+        json_str = _extract_json_object(_strip_code_fence(last_text))
+        analysis = StockAnalysis.model_validate_json(json_str)
+    except (ValueError, ValidationError) as e:
+        return (
+            f"[ERROR] StockAnalysis JSON parse failed: {e}; "
+            f"raw first 2000 chars:\n{last_text[:2000]}"
+        )
+
+    return _render_analysis_summary(symbol, analysis)
+
+
+__all__ = [
+    "LoadStrategyInput",
+    "RunAnalyzeStockInput",
+    "_list_strategy_names",
+    "_parse_strategy_frontmatter",
+    "_render_analysis_summary",
+    "load_strategy",
+    "run_analyze_stock",
+]
