@@ -1,0 +1,55 @@
+"""Pydantic schema for the strategy-match JSON contract.
+
+The authoritative definition lives in ``skill/strategy-match/SKILL.md``;
+this module mirrors it so the script layer can validate the LLM's final
+``AIMessage`` content via :meth:`StrategyMatchReport.model_validate_json`
+before rendering markdown or publishing to Feishu.
+
+The enum (``overall_fit`` / ``match_level`` / ``confidence``) is a tight
+``Literal`` set so a hallucinated category fails loudly at the validator
+instead of silently making it into the report.
+"""
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+
+class StrategyCriterionMatch(BaseModel):
+    """One strategy principle's match result.
+
+    Attributes:
+        criterion: Quoted text of the strategy principle being evaluated.
+        match_level: One of ``fit`` / ``partial`` / ``mismatch``.
+        evidence: Concrete fundamental data backing the judgment.
+        reasoning: Why the level was chosen.
+    """
+
+    criterion: str = Field(min_length=1)
+    match_level: Literal["fit", "partial", "mismatch"]
+    evidence: str = Field(min_length=1)
+    reasoning: str = Field(min_length=1)
+
+
+class StrategyMatchReport(BaseModel):
+    """Structured strategy-match output returned by ``StrategyMatchAgent``.
+
+    The system prompt in ``prompts/strategy_match_system_prompt.md``
+    describes the JSON shape the LLM must emit; this model is its
+    typed mirror.
+    """
+
+    symbol: str = Field(min_length=1)
+    strategy_name: str = Field(min_length=1)
+    strategy_version: str = Field(min_length=1)
+    overall_fit: Literal["buy", "hold", "avoid"]
+    fit_score: float = Field(ge=0, le=10)
+    summary: str = Field(min_length=1, max_length=200)
+    criterion_matches: list[StrategyCriterionMatch] = Field(min_length=1)
+    raw_analysis_excerpt: str = Field(min_length=1)
+    action_recommendation: str = Field(min_length=1)
+    confidence: Literal["high", "medium", "low"]
+
+
+__all__ = ["StrategyCriterionMatch", "StrategyMatchReport"]
