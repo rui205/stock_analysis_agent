@@ -26,7 +26,6 @@ from pathlib import Path
 
 from langchain_core.messages import BaseMessage, HumanMessage
 
-from stock_analysis_agent.agent.analysis_schema import StockAnalysis
 from stock_analysis_agent.agent.exceptions import ToolExecutionError
 from stock_analysis_agent.agent.stock_analysis import StockAnalysisAgent
 from stock_analysis_agent.tools.registry import (

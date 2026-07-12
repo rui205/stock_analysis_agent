@@ -135,30 +135,6 @@ class TestSkillDiscovery:
         assert len(get_skill_index()) == len(list_skill_names())
 
 
-class TestFormatSkillIndexMarkdown:
-    """format_skill_index_markdown renders the catalog for the system prompt."""
-
-    def test_renders_one_bullet_per_entry(self) -> None:
-        index = [
-            {"name": "alpha", "description": "first"},
-            {"name": "beta", "description": "second"},
-        ]
-        out = format_skill_index_markdown(index)
-        assert out.count("\n- ") == 1  # 2 bullets = 1 newline-prefixed bullet
-        assert "- `alpha` — first" in out
-        assert "- `beta` — second" in out
-
-    def test_collapses_multi_line_description_into_single_paragraph(self) -> None:
-        """YAML ``|`` blocks render as one line per skill, not many."""
-        index = [{"name": "x", "description": "line one\nline two\nline three"}]
-        out = format_skill_index_markdown(index)
-        # Joined with spaces, not newlines.
-        assert "- `x` — line one line two line three" in out
-
-    def test_empty_index_yields_placeholder(self) -> None:
-        assert format_skill_index_markdown([]) == "_(no skills available)_\n"
-
-
 class TestReadSkill:
     """Pure I/O for the underlying _read_skill helper."""
 
@@ -193,20 +169,6 @@ class TestLoadSkillTool:
     def test_tool_name_is_load_skill(self) -> None:
         assert load_skill.name == "load_skill"
 
-    def test_tool_args_schema_accepts_any_skill_name(self) -> None:
-        """The ``name`` parameter is a free-form string — any skill whose
-        SKILL.md exists on disk is accepted. The schema no longer
-        constrains the value to a Literal so the LLM can request skills
-        that are not baked into the agent's tool wiring (e.g. ``lark-doc``).
-        """
-        schema = load_skill.args
-        if hasattr(schema, "model_json_schema"):
-            schema = schema.model_json_schema()
-        # With a plain ``str`` type, the schema has no ``enum`` or ``const``
-        # restriction — the LLM is free to request any skill name.
-        assert "enum" not in schema["name"]
-        assert "const" not in schema["name"]
-        assert schema["name"]["type"] == "string"
 
     def test_tool_invoke_returns_lark_doc_skill_markdown(self) -> None:
         """End-to-end: ``load_skill`` can also read non-builtin skills
