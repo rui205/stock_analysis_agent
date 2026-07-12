@@ -122,6 +122,7 @@ _LOADABLE_SKILL_NAMES: tuple[str, ...] = (
     # "news-search",
     # "report-search",
     "stock-analysis",
+    "strategy-match",
     "mx-finance-search",
     "mx-macro-data",
 )
