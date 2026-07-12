@@ -13,6 +13,12 @@ Public API:
     load_skill            — @tool wrapper for reading a SKILL.md
     read_file             — @tool wrapper for reading any UTF-8 file under the project root
     run_command           — @tool wrapper for running CLI subprocesses
+    load_strategy         — @tool wrapper for reading a strategy .md from conf/strategies/
+    run_analyze_stock     — @tool wrapper that runs the StockAnalysisAgent subagent and returns a summary
+    _list_strategy_names  — alphabetical list of strategy file stems under conf/strategies/
+    _parse_strategy_frontmatter — extract simple key: value pairs from a strategy frontmatter block
+    LoadStrategyInput     — input schema for load_strategy
+    RunAnalyzeStockInput  — input schema for run_analyze_stock
 """
 from __future__ import annotations
 
@@ -38,6 +44,24 @@ from stock_analysis_agent.tools.skill import (
 from stock_analysis_agent.tools.text_extractor import _extract_text
 from stock_analysis_agent.tools.web_search import _web_search
 
+# ``stock_analysis_agent.tools.strategy`` depends on
+# :class:`StockAnalysisAgent`, which transitively imports
+# ``stock_analysis_agent.tools.web_search``. Importing it eagerly
+# here would re-enter ``stock_analysis_agent.tools.__init__`` during
+# the package-level import chain
+# (``stock_analysis_agent`` -> ``agent`` -> ``deepsearch`` ->
+# ``tools.web_search`` evaluates ``tools.__init__`` -> ``strategy``
+# -> ``agent.stock_analysis`` -> ``agent.deepsearch`` (partial) =
+# ``ImportError``). Resolve the names on demand via PEP 562.
+_STRATEGY_LAZY_NAMES: frozenset[str] = frozenset({
+    "LoadStrategyInput",
+    "RunAnalyzeStockInput",
+    "_list_strategy_names",
+    "_parse_strategy_frontmatter",
+    "load_strategy",
+    "run_analyze_stock",
+})
+
 __all__ = [
     "SkillIndexEntry",
     "ToolIndexEntry",
@@ -57,4 +81,24 @@ __all__ = [
     "load_skill",
     "read_file",
     "run_command",
+    "LoadStrategyInput",
+    "RunAnalyzeStockInput",
+    "_list_strategy_names",
+    "_parse_strategy_frontmatter",
+    "load_strategy",
+    "run_analyze_stock",
 ]
+
+def __getattr__(name: str) -> object:
+    """Lazily resolve ``stock_analysis_agent.tools.strategy`` names.
+
+    See the comment near ``_STRATEGY_LAZY_NAMES`` for why the
+    eager import is not used.
+    """
+    if name in _STRATEGY_LAZY_NAMES:
+        from stock_analysis_agent.tools import strategy as _strategy
+
+        value = getattr(_strategy, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

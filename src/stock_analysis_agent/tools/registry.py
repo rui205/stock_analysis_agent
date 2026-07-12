@@ -106,6 +106,15 @@ _TOOL_OUTPUTS: dict[str, ToolOutputSpec] = {
             "message lists the available skills."
         ),
     },
+    "load_strategy": {
+        "output": (
+            "`str` — full Markdown content of the strategy file "
+            "(YAML frontmatter + body). The LLM uses the natural-language "
+            "principles in the body to drive per-criterion matching. "
+            "Raises `FileNotFoundError` for unknown strategy names — the "
+            "error message lists the available strategies."
+        ),
+    },
     "read_file": {
         "output": (
             "`str` — UTF-8 text content of the file. Binary inputs "
@@ -130,6 +139,15 @@ _TOOL_OUTPUTS: dict[str, ToolOutputSpec] = {
             "command instead of splitting into `command` + `argv`); "
             "`TypeError` when `argv` isn't a list of strings; "
             "`FileNotFoundError` when `command` is not on `PATH`."
+        ),
+    },
+    "run_analyze_stock": {
+        "output": (
+            "`str` — markdown summary of the `StockAnalysis` JSON returned "
+            "by the embedded subagent, OR an `[ERROR] analyze_stock tool "
+            "failed: ...` string on `ToolExecutionError`, OR an `[ERROR] "
+            "StockAnalysis JSON parse failed: ...` string with up to "
+            "2000 chars of raw LLM output on validation failure."
         ),
     },
 }
@@ -286,10 +304,24 @@ def list_tools() -> list[BaseTool]:
     The list is ordered alphabetically by tool name for stable
     rendering. Adding a new tool requires appending here **and** to
     :data:`_TOOL_OUTPUTS`.
+
+    :mod:`stock_analysis_agent.tools.strategy` is imported lazily
+    here because it depends on
+    :class:`stock_analysis_agent.agent.stock_analysis.StockAnalysisAgent`,
+    and importing it eagerly breaks the package-level import order
+    (``stock_analysis_agent.__init__`` -> ``agent.deepsearch`` ->
+    ``tools.web_search`` would re-enter this module).
     """
+    from stock_analysis_agent.tools.strategy import (  # noqa: PLC0415
+        load_strategy,
+        run_analyze_stock,
+    )
+
     all_tools: list[BaseTool] = [
         load_skill,
+        load_strategy,
         read_file,
+        run_analyze_stock,
         run_command,
     ]
     return sorted(all_tools, key=lambda t: t.name)
