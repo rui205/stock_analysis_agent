@@ -48,6 +48,9 @@ class SkillIndexEntry(TypedDict):
     description: str
 
 
+_SKILL_FRONTMATTER_KEYS = frozenset({"name", "description"})
+
+
 def _parse_frontmatter(text: str) -> dict[str, str]:
     """Extract ``name`` and ``description`` from YAML frontmatter.
 
@@ -69,47 +72,15 @@ def _parse_frontmatter(text: str) -> dict[str, str]:
 
     Returns:
         Dict with ``name`` and ``description`` keys. Missing keys
-        yield empty strings — the caller decides the fallback.
+        default to empty strings so callers can rely on the schema.
     """
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return {"name": "", "description": ""}
-    end = 1
-    while end < len(lines) and lines[end].strip() != "---":
-        end += 1
-    fm = lines[1:end]
+    from stock_analysis_agent.tools._frontmatter import parse_yaml_frontmatter
 
-    result: dict[str, str] = {"name": "", "description": ""}
-    i = 0
-    while i < len(fm):
-        line = fm[i]
-        stripped = line.lstrip()
-        # Only top-level (column 0) ``name:`` / ``description:`` keys.
-        if not line.startswith(("name:", "description:")):
-            i += 1
-            continue
-        key, _, rest = line.partition(":")
-        rest = rest.strip()
-        if rest == "|":
-            # Multi-line literal block: capture indented lines until
-            # the next non-indented line (a new top-level key, or EOF).
-            i += 1
-            block: list[str] = []
-            while i < len(fm):
-                nxt = fm[i]
-                if nxt.startswith((" ", "\t")) and nxt.strip():
-                    block.append(nxt.strip())
-                    i += 1
-                else:
-                    break
-            result[key.strip()] = " ".join(block)
-            continue
-        # Single-line value: strip surrounding double quotes.
-        if len(rest) >= 2 and rest[0] == rest[-1] and rest[0] == '"':
-            rest = rest[1:-1]
-        result[key.strip()] = rest
-        i += 1
-    return result
+    parsed = parse_yaml_frontmatter(text, allow=_SKILL_FRONTMATTER_KEYS)
+    return {
+        "name": parsed.get("name", ""),
+        "description": parsed.get("description", ""),
+    }
 
 
 def list_skill_names() -> tuple[str, ...]:

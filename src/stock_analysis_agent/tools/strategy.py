@@ -43,53 +43,18 @@ def _parse_strategy_frontmatter(text: str) -> dict[str, str]:
     """Extract simple ``key: value`` pairs from a YAML frontmatter block.
 
     Supports single-line values and ``description: |`` literal blocks
-    (joined with spaces). Mirrors :func:`tools.skill._parse_frontmatter`
-    but returns a free-form dict instead of a fixed schema.
+    (joined with spaces). Delegates to the shared parser; only keys
+    in :data:`_STRATEGY_FRONTMATTER_KEYS` are returned (others dropped).
 
     Args:
         text: Full strategy Markdown text starting with the ``---`` fence.
 
     Returns:
-        Dict of frontmatter keys. Missing or unparseable input yields ``{}``.
+        Dict of frontmatter keys. Missing/unparseable input yields ``{}``.
     """
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return {}
-    end = 1
-    while end < len(lines) and lines[end].strip() != "---":
-        end += 1
-    fm_lines = lines[1:end]
-    result: dict[str, str] = {}
-    i = 0
-    while i < len(fm_lines):
-        line = fm_lines[i]
-        if ":" not in line or line.startswith((" ", "\t")):
-            i += 1
-            continue
-        key, _, rest = line.partition(":")
-        key = key.strip()
-        # Only retain the keys the strategy schema actually defines.
-        if key not in _STRATEGY_FRONTMATTER_KEYS:
-            i += 1
-            continue
-        rest = rest.strip()
-        if rest == "|":
-            i += 1
-            block: list[str] = []
-            while i < len(fm_lines):
-                nxt = fm_lines[i]
-                if nxt.startswith((" ", "\t")) and nxt.strip():
-                    block.append(nxt.strip())
-                    i += 1
-                else:
-                    break
-            result[key] = " ".join(block)
-            continue
-        if len(rest) >= 2 and rest[0] == rest[-1] and rest[0] == '"':
-            rest = rest[1:-1]
-        result[key] = rest
-        i += 1
-    return result
+    from stock_analysis_agent.tools._frontmatter import parse_yaml_frontmatter
+
+    return parse_yaml_frontmatter(text, allow=_STRATEGY_FRONTMATTER_KEYS)
 
 
 class LoadStrategyInput(BaseModel):
