@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from langchain_core.messages import ToolCall, ToolMessage
 
-from stock_analysis_agent.agent.middleware import _ToolRetryMiddleware
+from stock_analysis_agent.agent.middleware import _FeedbackMiddleware, _ToolRetryMiddleware
 from stock_analysis_agent.agent.exceptions import ToolExecutionError
 
 
@@ -181,3 +181,140 @@ def test_exponential_backoff_caps_at_max_delay(monkeypatch: pytest.MonkeyPatch) 
     # First three sleeps grow exponentially: 1, 2, 4 — capped to 3 starting at attempt 2.
     # Attempts 0..3 (4 retries) → sleeps after attempts 0,1,2,3 = [1, 2, 3, 3]
     assert sleeps == [1.0, 2.0, 3.0, 3.0], f"unexpected backoff sequence: {sleeps!r}"
+
+
+# ---------------------------------------------------------------------------
+# _FeedbackMiddleware — degrade exhausted tool errors back to the LLM
+# ---------------------------------------------------------------------------
+
+
+def test_feedback_converts_tool_execution_error_to_error_toolmessage() -> None:
+    """Exhausted ``ToolExecutionError`` becomes an error ToolMessage the
+    LLM can read — [ERROR] prefix, original message, correct call id."""
+    mw = _FeedbackMiddleware(failure_budget=3)
+
+    def handler(req):  # type: ignore[no-untyped-def]
+        raise ToolExecutionError("Tool 'load_skill' failed: skill 'nope' not found")
+
+    msg = mw.wrap_tool_call(_make_request(), handler)
+
+    assert isinstance(msg, ToolMessage)
+    assert msg.status == "error"
+    assert msg.tool_call_id == "call_1"
+    assert msg.content.startswith("[ERROR] ")
+    assert "Tool 'load_skill' failed: skill 'nope' not found" in msg.content
+
+
+def test_feedback_success_resets_consecutive_counter() -> None:
+    """A successful tool call resets the budget: fail→succeed→fail must
+    still degrade instead of raising."""
+    mw = _FeedbackMiddleware(failure_budget=1)
+    req = _make_request()
+
+    def failing(req):  # type: ignore[no-untyped-def]
+        raise ToolExecutionError("boom")
+
+    def ok(req):  # type: ignore[no-untyped-def]
+        return ToolMessage(content="ok", tool_call_id="call_1")
+
+    assert isinstance(mw.wrap_tool_call(req, failing), ToolMessage)  # count 1 ≤ 1
+    assert mw.wrap_tool_call(req, ok).content == "ok"  # reset
+    assert isinstance(mw.wrap_tool_call(req, failing), ToolMessage)  # count 1 again
+
+
+def test_feedback_budget_exhausted_raises() -> None:
+    """After ``failure_budget`` consecutive failures, the next failure
+    raises a ToolExecutionError naming the budget (original as __cause__)."""
+    mw = _FeedbackMiddleware(failure_budget=2)
+    req = _make_request()
+
+    def failing(req):  # type: ignore[no-untyped-def]
+        raise ToolExecutionError("boom")
+
+    assert isinstance(mw.wrap_tool_call(req, failing), ToolMessage)  # count 1
+    assert isinstance(mw.wrap_tool_call(req, failing), ToolMessage)  # count 2
+    with pytest.raises(ToolExecutionError) as ei:
+        mw.wrap_tool_call(req, failing)  # count 3 > 2 → raise
+
+    assert "budget" in str(ei.value)
+    assert isinstance(ei.value.__cause__, ToolExecutionError)
+
+
+def test_feedback_zero_budget_is_fail_fast() -> None:
+    """``failure_budget=0``: the very first failure raises immediately."""
+    mw = _FeedbackMiddleware(failure_budget=0)
+
+    def failing(req):  # type: ignore[no-untyped-def]
+        raise ToolExecutionError("boom")
+
+    with pytest.raises(ToolExecutionError):
+        mw.wrap_tool_call(_make_request(), failing)
+
+
+def test_feedback_lets_other_exceptions_pass_through() -> None:
+    """Only ``ToolExecutionError`` is degraded; anything else propagates."""
+    mw = _FeedbackMiddleware(failure_budget=3)
+
+    def handler(req):  # type: ignore[no-untyped-def]
+        raise RuntimeError("not wrapped")
+
+    with pytest.raises(RuntimeError):
+        mw.wrap_tool_call(_make_request(), handler)
+
+
+def test_feedback_reads_tool_call_id_from_dict_shape() -> None:
+    """``request.tool_call`` may be a plain dict at runtime — the
+    degraded ToolMessage must still carry the correct id."""
+    from langchain.agents.middleware.types import ToolCallRequest
+
+    mw = _FeedbackMiddleware(failure_budget=3)
+    req = ToolCallRequest(
+        tool_call={"name": "t", "args": {}, "id": "call_dict_1", "type": "tool_call"},
+        tool=None,
+        state=None,
+        runtime=None,
+    )
+
+    def handler(req):  # type: ignore[no-untyped-def]
+        raise ToolExecutionError("boom")
+
+    msg = mw.wrap_tool_call(req, handler)
+    assert isinstance(msg, ToolMessage)
+    assert msg.tool_call_id == "call_dict_1"
+
+
+async def test_feedback_converts_tool_execution_error_async() -> None:
+    """Async path mirrors the sync degrade behavior."""
+    mw = _FeedbackMiddleware(failure_budget=3)
+
+    async def handler(req):  # type: ignore[no-untyped-def]
+        raise ToolExecutionError("boom")
+
+    msg = await mw.awrap_tool_call(_make_request(), handler)
+
+    assert isinstance(msg, ToolMessage)
+    assert msg.status == "error"
+    assert msg.content.startswith("[ERROR] ")
+    assert "boom" in msg.content
+
+
+async def test_feedback_budget_exhausted_raises_async() -> None:
+    """Async path mirrors the budget-exhaustion raise."""
+    mw = _FeedbackMiddleware(failure_budget=0)
+
+    async def handler(req):  # type: ignore[no-untyped-def]
+        raise ToolExecutionError("boom")
+
+    with pytest.raises(ToolExecutionError):
+        await mw.awrap_tool_call(_make_request(), handler)
+
+
+async def test_feedback_lets_other_exceptions_pass_through_async() -> None:
+    """Async path lets non-ToolExecutionError exceptions propagate."""
+    mw = _FeedbackMiddleware(failure_budget=3)
+
+    async def handler(req):  # type: ignore[no-untyped-def]
+        raise RuntimeError("not wrapped")
+
+    with pytest.raises(RuntimeError):
+        await mw.awrap_tool_call(_make_request(), handler)

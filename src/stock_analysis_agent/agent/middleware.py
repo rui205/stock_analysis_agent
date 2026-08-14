@@ -1,4 +1,4 @@
-"""Retry middleware for tool calls in agent streams.
+"""Tool-call middleware: transient-error retry and LLM error feedback.
 
 Extracted from base.py so BaseAgent is small and focused on construction
 + streaming, while retry/backoff policy lives in its own module.
@@ -10,6 +10,7 @@ import time
 from typing import TYPE_CHECKING, Any, Callable
 
 from langchain.agents.middleware import AgentMiddleware
+from langchain_core.messages import ToolMessage
 
 from stock_analysis_agent.agent.exceptions import ToolExecutionError
 
@@ -241,3 +242,96 @@ async def _aretry_loop(
         f"Tool '{_tool_name(request)}' failed after "
         f"{max_retries} retries: {last_exc}"
     ) from last_exc
+
+
+_FEEDBACK_GUIDANCE: str = (
+    " You may retry with corrected arguments, or finish with the "
+    "information already gathered."
+)
+
+
+def _tool_call_id(request: "ToolCallRequest") -> str:
+    """Return the tool call id from a ToolCallRequest.
+
+    Like :func:`_tool_name`, accepts both runtime shapes of
+    ``request.tool_call``: a plain dict (TypedDict) or a ``ToolCall``
+    object.
+    """
+    tc = request.tool_call
+    if isinstance(tc, dict):
+        return str(tc.get("id", ""))
+    return str(getattr(tc, "id", ""))
+
+
+class _FeedbackMiddleware(AgentMiddleware):
+    """Feed exhausted tool errors back to the LLM instead of aborting.
+
+    Sits OUTSIDE :class:`_ToolRetryMiddleware` in the middleware list
+    (first defined = outermost). When the inner retry layer raises
+    ``ToolExecutionError`` (retries exhausted), this middleware converts
+    it into an error ``ToolMessage`` so the LLM can see the failure and
+    self-correct — retry with corrected arguments, switch tools, or
+    finish with the information already gathered.
+
+    A consecutive-failure budget guards against error loops: any
+    successful tool call resets the counter; once consecutive failures
+    exceed ``failure_budget``, a new ``ToolExecutionError`` naming the
+    budget is raised and the run terminates. ``failure_budget=0``
+    restores fail-fast behavior (the first failure raises).
+
+    Exceptions other than ``ToolExecutionError`` pass through untouched
+    (``KeyboardInterrupt`` never reaches this layer — the retry layer
+    only catches ``Exception``).
+    """
+
+    def __init__(self, failure_budget: int = 3) -> None:
+        self.failure_budget = failure_budget
+        self._consecutive_failures = 0
+
+    def wrap_tool_call(
+        self,
+        request: "ToolCallRequest",
+        handler: Callable[..., Any],
+    ) -> Any:
+        """Sync path: degrade ``ToolExecutionError`` into an error message."""
+        try:
+            result = handler(request)
+        except ToolExecutionError as exc:
+            return self._degrade_or_raise(request, exc)
+        self._consecutive_failures = 0
+        return result
+
+    async def awrap_tool_call(
+        self,
+        request: "ToolCallRequest",
+        handler: Callable[..., Any],
+    ) -> Any:
+        """Async path: mirror of :meth:`wrap_tool_call`."""
+        try:
+            result = await handler(request)
+        except ToolExecutionError as exc:
+            return self._degrade_or_raise(request, exc)
+        self._consecutive_failures = 0
+        return result
+
+    def _degrade_or_raise(
+        self, request: "ToolCallRequest", exc: ToolExecutionError
+    ) -> Any:
+        """Count the failure, then feed back or terminate the run.
+
+        Within budget: return an error ``ToolMessage`` (``[ERROR]`` prefix
+        + original message + recovery guidance) addressed to the failing
+        tool call. Over budget: raise a new ``ToolExecutionError`` naming
+        the budget, chaining the exhausted error as ``__cause__``.
+        """
+        self._consecutive_failures += 1
+        if self._consecutive_failures > self.failure_budget:
+            raise ToolExecutionError(
+                f"tool failure budget exhausted after {self.failure_budget} "
+                f"consecutive tool failures; last error: {exc}"
+            ) from exc
+        return ToolMessage(
+            content=f"[ERROR] {exc}{_FEEDBACK_GUIDANCE}",
+            tool_call_id=_tool_call_id(request),
+            status="error",
+        )
