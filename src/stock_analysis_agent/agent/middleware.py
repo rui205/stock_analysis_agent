@@ -66,8 +66,15 @@ class _ToolRetryMiddleware(AgentMiddleware):
     `stock_analysis_agent.agent.exceptions`) with the original
     exception preserved as `__cause__`.
 
-    Business errors (anything not classified transient) are wrapped
-    in `ToolExecutionError` immediately without retrying.
+    Business errors (anything not classified transient) get a small
+    unexpected-retry budget (`unexpected_retries`, default 1) with a
+    fixed `initial_delay` pause, to absorb flaky failures that are not
+    classified transient (e.g. a subprocess hiccup). Once that budget
+    is exhausted they are wrapped in `ToolExecutionError`. Set
+    `unexpected_retries=0` to restore fail-fast behavior.
+
+    `KeyboardInterrupt` / `SystemExit` are never caught — they
+    propagate to the caller so Ctrl+C can abort a run.
     """
 
     def __init__(
@@ -77,11 +84,13 @@ class _ToolRetryMiddleware(AgentMiddleware):
         initial_delay: float = 1.0,
         backoff_factor: float = 2.0,
         max_delay: float = 30.0,
+        unexpected_retries: int = 1,
     ) -> None:
         self.max_retries = max_retries
         self.initial_delay = initial_delay
         self.backoff_factor = backoff_factor
         self.max_delay = max_delay
+        self.unexpected_retries = unexpected_retries
 
     def wrap_tool_call(
         self,
@@ -96,6 +105,7 @@ class _ToolRetryMiddleware(AgentMiddleware):
             initial_delay=self.initial_delay,
             backoff_factor=self.backoff_factor,
             max_delay=self.max_delay,
+            unexpected_retries=self.unexpected_retries,
             sleep_fn=time.sleep,
         )
 
@@ -118,6 +128,7 @@ class _ToolRetryMiddleware(AgentMiddleware):
             initial_delay=self.initial_delay,
             backoff_factor=self.backoff_factor,
             max_delay=self.max_delay,
+            unexpected_retries=self.unexpected_retries,
             sleep_fn=asyncio.sleep,
         )
 
@@ -130,26 +141,46 @@ def _retry_loop(
     initial_delay: float,
     backoff_factor: float,
     max_delay: float,
+    unexpected_retries: int,
     sleep_fn: Callable[[float], Any],
 ) -> Any:
-    """Shared retry loop. `sleep_fn` is `time.sleep` for sync callers."""
-    last_exc: BaseException | None = None
+    """Shared retry loop. `sleep_fn` is `time.sleep` for sync callers.
+
+    Transient errors are retried up to `max_retries` times with
+    exponential backoff. Non-transient errors consume a separate,
+    smaller `unexpected_retries` budget with a fixed `initial_delay`
+    pause. Only `Exception` subclasses are caught — `KeyboardInterrupt`
+    and `SystemExit` propagate to the caller.
+    """
+    last_exc: Exception | None = None
     total_attempts = max_retries + 1
-    for attempt in range(total_attempts):
+    unexpected_left = unexpected_retries
+    attempt = 0
+    while attempt < total_attempts:
         try:
             return handler(request)
-        except BaseException as exc:  # noqa: BLE001 — top-level guard
+        except Exception as exc:  # noqa: BLE001 — retry layer by design
             last_exc = exc
-            if not _is_transient(exc):
-                raise ToolExecutionError(
-                    f"Tool '{_tool_name(request)}' failed: {exc}"
-                ) from exc
-            if attempt < max_retries:
-                delay = _compute_backoff(
-                    attempt, initial_delay, backoff_factor, max_delay
-                )
-                if delay > 0:
-                    sleep_fn(delay)
+            if _is_transient(exc):
+                attempt += 1
+                if attempt < total_attempts:
+                    delay = _compute_backoff(
+                        attempt - 1, initial_delay, backoff_factor, max_delay
+                    )
+                    if delay > 0:
+                        sleep_fn(delay)
+                    continue
+                break
+            # Non-transient: give flaky-but-unexpected failures a small
+            # second chance before aborting the run.
+            if unexpected_left > 0:
+                unexpected_left -= 1
+                if initial_delay > 0:
+                    sleep_fn(initial_delay)
+                continue
+            raise ToolExecutionError(
+                f"Tool '{_tool_name(request)}' failed: {exc}"
+            ) from exc
     # Exhausted all retries on a transient error.
     assert last_exc is not None  # for type-checkers
     raise ToolExecutionError(
@@ -166,6 +197,7 @@ async def _aretry_loop(
     initial_delay: float,
     backoff_factor: float,
     max_delay: float,
+    unexpected_retries: int,
     sleep_fn: Callable[[float], Any],
 ) -> Any:
     """Async counterpart of `_retry_loop`. `sleep_fn` is `asyncio.sleep`.
@@ -174,23 +206,35 @@ async def _aretry_loop(
     async — awaiting the handler requires a coroutine context, which a
     sync function cannot provide.
     """
-    last_exc: BaseException | None = None
+    last_exc: Exception | None = None
     total_attempts = max_retries + 1
-    for attempt in range(total_attempts):
+    unexpected_left = unexpected_retries
+    attempt = 0
+    while attempt < total_attempts:
         try:
             return await handler(request)
-        except BaseException as exc:  # noqa: BLE001 — top-level guard
+        except Exception as exc:  # noqa: BLE001 — retry layer by design
             last_exc = exc
-            if not _is_transient(exc):
-                raise ToolExecutionError(
-                    f"Tool '{_tool_name(request)}' failed: {exc}"
-                ) from exc
-            if attempt < max_retries:
-                delay = _compute_backoff(
-                    attempt, initial_delay, backoff_factor, max_delay
-                )
-                if delay > 0:
-                    await sleep_fn(delay)
+            if _is_transient(exc):
+                attempt += 1
+                if attempt < total_attempts:
+                    delay = _compute_backoff(
+                        attempt - 1, initial_delay, backoff_factor, max_delay
+                    )
+                    if delay > 0:
+                        await sleep_fn(delay)
+                    continue
+                break
+            # Non-transient: give flaky-but-unexpected failures a small
+            # second chance before aborting the run.
+            if unexpected_left > 0:
+                unexpected_left -= 1
+                if initial_delay > 0:
+                    await sleep_fn(initial_delay)
+                continue
+            raise ToolExecutionError(
+                f"Tool '{_tool_name(request)}' failed: {exc}"
+            ) from exc
     # Exhausted all retries on a transient error.
     assert last_exc is not None  # for type-checkers
     raise ToolExecutionError(

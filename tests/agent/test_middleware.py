@@ -1,7 +1,6 @@
 """Tests for the internal _ToolRetryMiddleware."""
 from __future__ import annotations
 
-import time
 from typing import Any
 
 import pytest
@@ -43,9 +42,10 @@ def test_transient_error_is_retried_then_raises() -> None:
     assert isinstance(ei.value.__cause__, TimeoutError)
 
 
-def test_business_error_is_not_retried() -> None:
-    """Non-transient errors (e.g. ValueError) must NOT be retried;
-    they raise ToolExecutionError immediately."""
+def test_business_error_gets_one_unexpected_retry_by_default() -> None:
+    """Non-transient errors (e.g. ValueError) get a small unexpected-retry
+    budget (default 1) to absorb flaky failures that are not classified
+    transient; once exhausted they raise ToolExecutionError."""
     mw = _ToolRetryMiddleware(max_retries=5, initial_delay=0.0, backoff_factor=0.0)
     calls = {"n": 0}
 
@@ -57,8 +57,83 @@ def test_business_error_is_not_retried() -> None:
     with pytest.raises(ToolExecutionError) as ei:
         mw.wrap_tool_call(req, handler)
 
-    assert calls["n"] == 1
+    assert calls["n"] == 2  # 1 initial + 1 unexpected retry
     assert isinstance(ei.value.__cause__, ValueError)
+
+
+def test_business_error_recovers_on_unexpected_retry() -> None:
+    """A flaky non-transient failure that succeeds on the second attempt
+    must return the handler result instead of aborting the run."""
+    mw = _ToolRetryMiddleware(max_retries=5, initial_delay=0.0, backoff_factor=0.0)
+    calls = {"n": 0}
+    expected = ToolMessage(content="ok", tool_call_id="call_1")
+
+    def handler(req):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ValueError("flaky first attempt")
+        return expected
+
+    result = mw.wrap_tool_call(_make_request(), handler)
+    assert result is expected
+    assert calls["n"] == 2
+
+
+def test_unexpected_retries_zero_means_no_business_retry() -> None:
+    """``unexpected_retries=0`` restores the old fail-fast behavior."""
+    mw = _ToolRetryMiddleware(
+        max_retries=5, initial_delay=0.0, backoff_factor=0.0, unexpected_retries=0
+    )
+    calls = {"n": 0}
+
+    def handler(req):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        raise ValueError("bad input")
+
+    with pytest.raises(ToolExecutionError):
+        mw.wrap_tool_call(_make_request(), handler)
+
+    assert calls["n"] == 1
+
+
+def test_keyboard_interrupt_propagates_sync() -> None:
+    """``KeyboardInterrupt`` must NOT be swallowed by the retry layer —
+    Ctrl+C has to reach the top level instead of being wrapped into a
+    ToolExecutionError."""
+    mw = _ToolRetryMiddleware(max_retries=2, initial_delay=0.0, backoff_factor=0.0)
+
+    def handler(req):  # type: ignore[no-untyped-def]
+        raise KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        mw.wrap_tool_call(_make_request(), handler)
+
+
+async def test_business_error_gets_one_unexpected_retry_by_default_async() -> None:
+    """Async path mirrors the sync unexpected-retry budget."""
+    mw = _ToolRetryMiddleware(max_retries=5, initial_delay=0.0, backoff_factor=0.0)
+    calls = {"n": 0}
+
+    async def handler(req):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        raise ValueError("bad input")
+
+    with pytest.raises(ToolExecutionError) as ei:
+        await mw.awrap_tool_call(_make_request(), handler)
+
+    assert calls["n"] == 2  # 1 initial + 1 unexpected retry
+    assert isinstance(ei.value.__cause__, ValueError)
+
+
+async def test_keyboard_interrupt_propagates_async() -> None:
+    """``KeyboardInterrupt`` must escape the async retry layer unwrapped."""
+    mw = _ToolRetryMiddleware(max_retries=2, initial_delay=0.0, backoff_factor=0.0)
+
+    async def handler(req):  # type: ignore[no-untyped-def]
+        raise KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        await mw.awrap_tool_call(_make_request(), handler)
 
 
 def test_successful_call_returns_handler_result() -> None:
