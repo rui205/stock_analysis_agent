@@ -10,7 +10,10 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.schema import StreamEvent
 from langchain_core.tools import BaseTool
 
-from stock_analysis_agent.agent.middleware import _ToolRetryMiddleware
+from stock_analysis_agent.agent.middleware import (
+    _FeedbackMiddleware,
+    _ToolRetryMiddleware,
+)
 from stock_analysis_agent.conf.settings import (
     DEFAULT_MAX_TOKENS,
     DEFAULT_MODEL,
@@ -45,6 +48,7 @@ class BaseAgent:
         temperature: float = DEFAULT_TEMPERATURE,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         max_retries: int = 2,
+        tool_failure_budget: int = 3,
         recursion_limit: int | None = None,
         name: str | None = None,
     ) -> None:
@@ -54,6 +58,7 @@ class BaseAgent:
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._max_retries = max_retries
+        self._tool_failure_budget = tool_failure_budget
         self._recursion_limit = recursion_limit
         self._name = name if name is not None else type(self).__name__
 
@@ -77,6 +82,16 @@ class BaseAgent:
     @property
     def max_retries(self) -> int:
         return self._max_retries
+
+    @property
+    def tool_failure_budget(self) -> int:
+        """Consecutive tool-failure budget for the feedback middleware.
+
+        Tool errors fed back to the LLM may loop; after this many
+        consecutive failing tool calls the run terminates. ``0`` restores
+        fail-fast behavior.
+        """
+        return self._tool_failure_budget
 
     @property
     def recursion_limit(self) -> int | None:
@@ -149,7 +164,13 @@ class BaseAgent:
             api_key=settings.api_key,
             model_provider=settings.provider,
         )
-        middleware = [_ToolRetryMiddleware(max_retries=self._max_retries)]
+        middleware = [
+            # First defined = outermost: feedback must wrap the retry
+            # layer so it sees the retry layer's exhausted
+            # ToolExecutionError and can degrade it into a ToolMessage.
+            _FeedbackMiddleware(failure_budget=self._tool_failure_budget),
+            _ToolRetryMiddleware(max_retries=self._max_retries),
+        ]
         return create_agent(
             model=model,
             tools=self._tools,

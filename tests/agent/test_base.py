@@ -65,6 +65,16 @@ def test_base_agent_max_tokens_default_is_32768() -> None:
     assert _NoopAgent().max_tokens == 32768
 
 
+def test_tool_failure_budget_defaults_to_three() -> None:
+    """The feedback middleware budget defaults to 3 consecutive failures."""
+    assert _NoopAgent().tool_failure_budget == 3
+
+
+def test_tool_failure_budget_stores_value() -> None:
+    """``tool_failure_budget`` is stored verbatim when provided."""
+    assert _NoopAgent(tool_failure_budget=5).tool_failure_budget == 5
+
+
 # ---------------------------------------------------------------------------
 # settings conf wiring — model defaults + api_key binding
 # ---------------------------------------------------------------------------
@@ -456,4 +466,110 @@ def test_messages_are_stateless() -> None:
 
     assert _last_ai_text() == "reply-1"
     assert _last_ai_text() == "reply-2"
+
+
+def _patch_graph_building(monkeypatch: pytest.MonkeyPatch, model) -> None:  # type: ignore[no-untyped-def]
+    """Point BaseAgent._build_graph at ``model`` instead of a live LLM.
+
+    ``_build_graph`` imports ``init_chat_model`` and ``get_settings`` at
+    call time, so patching the source modules redirects the construction.
+    """
+    from types import SimpleNamespace
+
+    import langchain.chat_models as chat_models_mod
+
+    import stock_analysis_agent.conf.settings as settings_mod
+
+    monkeypatch.setattr(chat_models_mod, "init_chat_model", lambda *a, **k: model)
+    monkeypatch.setattr(
+        settings_mod,
+        "get_settings",
+        lambda: SimpleNamespace(api_key="test-key", provider="anthropic"),
+    )
+
+
+def test_feedback_budget_exhaustion_terminates_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A tool that keeps failing burns the consecutive-failure budget,
+    then the run terminates with a budget-exhaustion ToolExecutionError.
+
+    Also pins the middleware order: feedback MUST wrap retry (first
+    defined = outermost), otherwise no "budget" message would surface.
+    """
+    from langchain.tools import tool
+
+    from tests.agent.conftest import ToolAwareFakeChatModel, make_ai, make_tool_call
+
+    @tool
+    def always_broken(query: str) -> str:
+        """A tool that always raises TimeoutError."""
+        raise TimeoutError("upstream timeout")
+
+    tc1 = make_ai("")
+    tc1.tool_calls = [make_tool_call("always_broken", {"query": "x"}, "call_broken_1")]
+    tc2 = make_ai("")
+    tc2.tool_calls = [make_tool_call("always_broken", {"query": "x"}, "call_broken_2")]
+    model = ToolAwareFakeChatModel(responses=[tc1, tc2, make_ai("unreached")])
+    _patch_graph_building(monkeypatch, model)
+
+    agent = _NoopAgent(
+        system_prompt="test",
+        tools=[always_broken],
+        max_retries=0,
+        tool_failure_budget=1,
+    )
+
+    with pytest.raises(ToolExecutionError) as ei:
+        for _ in agent.stream([HumanMessage(content="use always_broken")]):
+            pass
+
+    assert "budget" in str(ei.value)
+
+
+def test_feedback_lets_llm_recover_after_tool_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A tool that fails once then succeeds: the error is fed back, the
+    model retries, the run completes, and the counter is reset."""
+    from langchain.tools import tool
+    from langchain_core.messages import ToolMessage
+
+    from tests.agent.conftest import ToolAwareFakeChatModel, make_ai, make_tool_call
+
+    calls = {"n": 0}
+
+    @tool
+    def flaky_once(query: str) -> str:
+        """Raises TimeoutError on the first call, then succeeds."""
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TimeoutError("upstream timeout")
+        return "tool succeeded"
+
+    tc1 = make_ai("")
+    tc1.tool_calls = [make_tool_call("flaky_once", {"query": "x"}, "call_f1")]
+    tc2 = make_ai("")
+    tc2.tool_calls = [make_tool_call("flaky_once", {"query": "x"}, "call_f2")]
+    model = ToolAwareFakeChatModel(responses=[tc1, tc2, make_ai("done")])
+    _patch_graph_building(monkeypatch, model)
+
+    agent = _NoopAgent(
+        system_prompt="test",
+        tools=[flaky_once],
+        max_retries=0,
+        tool_failure_budget=3,
+    )
+
+    final_messages: list = []
+    for event in agent.stream([HumanMessage(content="use flaky_once")]):
+        if event.get("event") == "on_chain_end":
+            out = (event.get("data") or {}).get("output")
+            if isinstance(out, dict) and "messages" in out:
+                final_messages = out["messages"]
+
+    assert calls["n"] == 2  # 1 failed attempt (fed back) + 1 success
+    error_msgs = [
+        m for m in final_messages
+        if isinstance(m, ToolMessage) and m.status == "error"
+    ]
+    assert len(error_msgs) == 1
+    assert error_msgs[0].content.startswith("[ERROR] ")
+    assert getattr(final_messages[-1], "content", "") == "done"
 
