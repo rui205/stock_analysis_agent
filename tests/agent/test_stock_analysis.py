@@ -1,28 +1,23 @@
-"""Tests for StockAnalysisAgent: provider injection, tools, and prompt contract.
+"""Tests for StockAnalysisAgent: tools and prompt contract.
 
 The agent is intentionally schema-agnostic — there is no built-in default
 prompt, so these tests focus on what the agent *does* guarantee:
 
-- provider singletons are populated on construction
 - the right tools are exposed (``load_skill`` and ``read_file`` are
   always present; ``run_command`` is opt-in via ``include_shell_tool``)
 - the caller's ``system_prompt`` is plumbed through verbatim
 - a missing / empty ``system_prompt`` is rejected loudly
 
 Note: ``get_stock_snapshot`` and ``web_search`` are no longer wired into
-the agent (they are being prepared for deletion); tests covering their
-exposure have been removed.
+the agent (snapshot's ``market_data`` module is gone; web-search logic
+moves back into ``agent.deepsearch``); tests covering their exposure
+have been removed along with the related constructor parameters.
 """
 from __future__ import annotations
 
 import pytest
 
-from stock_analysis_agent.agent.deepsearch import DEFAULT_SITE_LIST
 from stock_analysis_agent.agent.stock_analysis import StockAnalysisAgent
-from stock_analysis_agent.tools.web_search import (
-    _CACHE_PROVIDER as _WS_CACHE_PROVIDER,
-    _SITE_LIST_PROVIDER,
-)
 
 
 _TEST_PROMPT = "you are a test prompt for {symbol}"
@@ -38,22 +33,6 @@ def _agent(**overrides) -> StockAnalysisAgent:
 
 
 # ---------------------------------------------------------------------------
-# provider wiring
-# ---------------------------------------------------------------------------
-
-
-def test_construction_populates_all_providers() -> None:
-    """``web_search`` providers are populated when ``include_web_search`` is True (default).
-
-    The ``market_data`` snapshot provider is gone (removed with the
-    ``market_data`` module); only ``web_search`` wiring remains.
-    """
-    _agent()
-    assert _WS_CACHE_PROVIDER.get() is not None
-    assert _SITE_LIST_PROVIDER.get() == list(DEFAULT_SITE_LIST)
-
-
-# ---------------------------------------------------------------------------
 # tool exposure
 # ---------------------------------------------------------------------------
 
@@ -61,12 +40,22 @@ def test_construction_populates_all_providers() -> None:
 def test_default_tools_are_load_skill_and_read_file() -> None:
     """The agent exposes ``load_skill`` and ``read_file`` by default.
 
+    These are the sub-agent's data-discovery surface:
+      - ``load_skill`` — load SKILL.md instructions
+      - ``read_file`` — read arbitrary UTF-8 files under the project root
+
+    Directory listing is done via ``run_command(command='ls', argv=[...])``
+    when shell is enabled; no dedicated ``list_dir`` tool exists.
+
     ``run_command`` is opt-in (see ``test_run_command_omitted_by_default``);
     ``get_stock_snapshot`` / ``web_search`` are no longer wired.
     """
     tool_names = {t.name for t in _agent().tools}
     assert "load_skill" in tool_names
     assert "read_file" in tool_names
+    assert "list_dir" not in tool_names, (
+        "list_dir was removed — use run_command(command='ls', argv=[...])"
+    )
     assert "get_stock_snapshot" not in tool_names
     assert "web_search" not in tool_names
 
@@ -94,24 +83,15 @@ def test_include_shell_tool_adds_run_command_to_tools() -> None:
     # The other defaults are still present.
     assert "load_skill" in tool_names
     assert "read_file" in tool_names
+    assert "list_dir" not in tool_names, (
+        "list_dir was removed — use run_command(command='ls', argv=[...])"
+    )
 
 
 def test_include_shell_tool_property() -> None:
     """The ``include_shell_tool`` attribute reflects the constructor flag."""
     assert _agent().include_shell_tool is False
     assert _agent(include_shell_tool=True).include_shell_tool is True
-
-
-# ---------------------------------------------------------------------------
-# properties
-# ---------------------------------------------------------------------------
-
-
-def test_include_web_search_property() -> None:
-    a_on = _agent(include_web_search=True)
-    a_off = _agent(include_web_search=False)
-    assert a_on.include_web_search is True
-    assert a_off.include_web_search is False
 
 
 # ---------------------------------------------------------------------------

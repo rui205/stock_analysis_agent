@@ -8,38 +8,29 @@ should emit; this class only guarantees that whatever schema the prompt
 asks for will reach the LLM, the tools will be available, and the
 providers will be correctly initialized.
 
+Directory listing is done through ``run_command(command="ls", argv=[...])``
+— there is no separate ``list_dir`` tool.
+
 Note: ``get_stock_snapshot`` has been removed (the ``market_data``
-module is gone); the ``include_peers`` parameter remains as a no-op so
-existing callers do not break. ``web_search`` is still wired (the
-``include_web_search`` parameter and the corresponding provider writes
-remain active) because ``agent.deepsearch`` continues to depend on it.
+module is gone) and ``web_search`` is no longer wired into this agent
+either — its provider plumbing lived here only as a side effect of the
+shared module-level singletons, and ``agent.deepsearch`` owns that
+logic now. The corresponding constructor parameters
+(``include_peers``, ``peer_count``, ``include_web_search``,
+``site_list``, ``cache_dir``, ``cache_ttl``) were removed together
+with it.
 
 Typical callers (e.g. ``script.analyze_stock``) load a prompt template
 from disk and pass it in.
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
-from pathlib import Path
 from typing import Any
 
 from stock_analysis_agent.agent.base import BaseAgent
-from stock_analysis_agent.agent.deepsearch import (
-    DEFAULT_CACHE_DIR,
-    DEFAULT_CACHE_TTL,
-    DEFAULT_SITE_LIST,
-)
-from stock_analysis_agent.memory.file_cache import _FileCache
 from stock_analysis_agent.tools.read_file import read_file
 from stock_analysis_agent.tools.shell import run_command
 from stock_analysis_agent.tools.skill import load_skill
-from stock_analysis_agent.tools.web_search import (
-    _CACHE_PROVIDER as _WS_CACHE_PROVIDER,
-    _SITE_LIST_PROVIDER,
-)
-
-# Defaults (site list, cache dir, cache ttl) are imported from
-# ``agent.deepsearch`` so a single source of truth governs both agents.
 
 
 class StockAnalysisAgent(BaseAgent):
@@ -52,14 +43,6 @@ class StockAnalysisAgent(BaseAgent):
     different callers can target different output schemas (e.g. a terse
     JSON, a structured Markdown report, a multi-section company
     profile) without subclassing.
-
-    Construction mirrors :class:`DeepSearchAgent`: it writes into the
-    module-level ``_Provider`` singletons used by the @tool callables,
-    so calling ``StockAnalysisAgent(symbol=..., system_prompt=...)`` is
-    enough to make all tools available.
-
-    Concurrent multi-instance construction in one process is not
-    supported (matches :class:`DeepSearchAgent`'s constraint).
     """
 
     def __init__(
@@ -67,51 +50,36 @@ class StockAnalysisAgent(BaseAgent):
         *,
         symbol: str,
         system_prompt: str,
-        include_peers: bool = True,
-        peer_count: int = 2,
-        include_web_search: bool = True,
         include_shell_tool: bool = False,
-        site_list: Sequence[str] | None = None,
-        cache_dir: str | Path | None = None,
-        cache_ttl: float | None = DEFAULT_CACHE_TTL,
         max_retries: int = 3,
         recursion_limit: int = 50,
         **kwargs: Any,
     ) -> None:
+        """Initialize the agent.
+
+        Args:
+            symbol: Stock symbol this run analyzes (e.g. ``600519.SH``).
+                Recorded for callers/logging; not interpreted here.
+            system_prompt: Caller-owned system prompt defining the
+                output contract. Must be non-empty.
+            include_shell_tool: When ``True``, also expose
+                ``run_command`` to the LLM. Off by default — the shell
+                tool is a privilege escalation.
+            max_retries: Tool-call retry budget for transient errors.
+            recursion_limit: LangGraph step budget for the agent loop.
+            **kwargs: Forwarded to :class:`BaseAgent` (``model``,
+                ``temperature``, ``name``, ...).
+
+        Raises:
+            ValueError: If ``symbol`` or ``system_prompt`` is empty.
+        """
         if not symbol:
             raise ValueError("symbol cannot be empty")
         if not system_prompt:
             raise ValueError("system_prompt cannot be empty")
 
-        resolved_sites: list[str] = (
-            list(site_list) if site_list is not None else list(DEFAULT_SITE_LIST)
-        )
-        if include_web_search and not resolved_sites:
-            raise ValueError("site_list cannot be empty when web_search is enabled")
-
-        resolved_dir = (
-            Path(cache_dir).expanduser().resolve()
-            if cache_dir is not None
-            else Path(DEFAULT_CACHE_DIR).expanduser().resolve()
-        )
-
-        self._cache = _FileCache(resolved_dir, ttl_seconds=cache_ttl)
         self._symbol = symbol
-        self._include_peers = include_peers
-        self._peer_count = peer_count
-        self._include_web_search = include_web_search
         self._include_shell_tool = include_shell_tool
-
-        # Single-instance provider writes — the ``web_search`` @tool reads
-        # these via .get() on each invocation. ``include_peers`` is now a
-        # no-op (the snapshot provider is gone); the parameter is kept so
-        # existing callers continue to compile.
-        # When ``include_web_search`` is False, skip the web_search providers
-        # entirely so the LLM cannot accidentally call a half-initialized
-        # _web_search.
-        if include_web_search:
-            _WS_CACHE_PROVIDER.value = self._cache
-            _SITE_LIST_PROVIDER.value = resolved_sites
 
         tools = [load_skill, read_file]
         if include_shell_tool:
@@ -127,22 +95,12 @@ class StockAnalysisAgent(BaseAgent):
 
     @property
     def symbol(self) -> str:
+        """The stock symbol this agent run analyzes."""
         return self._symbol
 
     @property
-    def include_peers(self) -> bool:
-        return self._include_peers
-
-    @property
-    def peer_count(self) -> int:
-        return self._peer_count
-
-    @property
-    def include_web_search(self) -> bool:
-        return self._include_web_search
-
-    @property
     def include_shell_tool(self) -> bool:
+        """Whether the ``run_command`` tool is exposed to the LLM."""
         return self._include_shell_tool
 
 
