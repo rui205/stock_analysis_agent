@@ -31,6 +31,7 @@ from stock_analysis_agent.tools.skill import load_skill
 from stock_analysis_agent.tools.strategy import (
     load_strategy,
     run_analyze_stock,
+    run_deepresearch,
     set_subagent_include_shell_tool,
 )
 
@@ -38,8 +39,8 @@ from stock_analysis_agent.tools.strategy import (
 class StrategyMatchAgent(BaseAgent):
     """LLM-driven strategy-match agent (orchestrator).
 
-    Bundles ``load_strategy``, ``run_analyze_stock``, ``load_skill``,
-    and (opt-in) ``run_command``. The system prompt is **caller-supplied**
+    Bundles ``load_strategy``, ``run_analyze_stock``, ``run_deepresearch``,
+    ``load_skill``, and (opt-in) ``run_command``. The system prompt is **caller-supplied**
     — pass ``system_prompt=`` to define the output contract.
 
     This class deliberately does NOT include ``read_file``: that is a
@@ -62,7 +63,8 @@ class StrategyMatchAgent(BaseAgent):
         recursion_limit: LangGraph budget. The typical run touches
             ``load_strategy`` + ``run_analyze_stock`` + 2-3 reasoning
             rounds + the final answer — ~15-20 graph nodes total.
-            Default 80 gives comfortable headroom.
+            Default 120 gives headroom for the analyze-stock subagent plus up
+            to 3 deep-research fallback calls.
     """
 
     def __init__(
@@ -71,7 +73,7 @@ class StrategyMatchAgent(BaseAgent):
         system_prompt: str,
         include_shell_tool: bool = False,
         max_retries: int = 2,
-        recursion_limit: int = 80,
+        recursion_limit: int = 120,
         **kwargs: Any,
     ) -> None:
         if not system_prompt:
@@ -89,7 +91,7 @@ class StrategyMatchAgent(BaseAgent):
         # Orchestration layer: strategy + sub-agent + skill workflow
         # discovery + opt-in shell. No file/dir primitives — those are
         # the sub-agent's surface, not ours.
-        tools: list[Any] = [load_strategy, run_analyze_stock, load_skill]
+        tools: list[Any] = [load_strategy, run_analyze_stock, run_deepresearch, load_skill]
         if include_shell_tool:
             tools.append(run_command)
 

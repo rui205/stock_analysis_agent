@@ -351,6 +351,7 @@ class TestStrategyMatchAgent:
         # Workflow glue (must-have):
         assert "load_strategy" in names
         assert "run_analyze_stock" in names
+        assert "run_deepresearch" in names
         assert "load_skill" in names
         # Sub-agent's data-discovery surface must NOT leak here:
         assert "read_file" not in names
@@ -364,9 +365,9 @@ class TestStrategyMatchAgent:
         names = sorted(t.name for t in agent.tools)
         assert "run_command" in names
 
-    def test_recursion_limit_default_is_80(self) -> None:
+    def test_recursion_limit_default_is_120(self) -> None:
         agent = StrategyMatchAgent(system_prompt="hello")
-        assert agent.recursion_limit == 80
+        assert agent.recursion_limit == 120
 
     def test_shell_flag_propagates_to_subagent_provider_when_enabled(self) -> None:
         """``include_shell_tool=True`` must reach the module-level flag that
