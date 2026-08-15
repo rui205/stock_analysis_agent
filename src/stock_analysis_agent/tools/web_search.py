@@ -1,128 +1,14 @@
-"""@tool web_search: fan-out concurrent HTTP search over a configured site list."""
+"""@tool web_search: Tavily-backed web search with file caching."""
 from __future__ import annotations
 
-import asyncio
 from typing import Any, Generic, TypeVar
 
-import httpx
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from stock_analysis_agent.agent.exceptions import ToolExecutionError
+from stock_analysis_agent.infra.tavily_adapter import TavilyAdapter, TavilySearchError
 from stock_analysis_agent.memory.file_cache import _FileCache
-from stock_analysis_agent.tools.text_extractor import _extract_text
-
-
-# Bing and DuckDuckGo HTML reject the default httpx user-agent
-# (``python-httpx/...``) and return 302 / CAPTCHA. Sending a current
-# Chrome UA lets the requests through on most networks.
-_DEFAULT_USER_AGENT: str = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/120.0.0.0 Safari/537.36"
-)
-
-# Markers that indicate a search engine returned a verification page
-# instead of actual results. If the final URL or response body contains
-# any of these, the response is treated as a failure so the LLM does
-# not try to reason about CAPTCHA UI text.
-_CAPTCHA_URL_MARKERS: tuple[str, ...] = (
-    "wappass.baidu.com",
-    "qcaptcha.so.com",
-    "/captcha",
-    "verify.baidu.com",
-)
-_CAPTCHA_TEXT_MARKERS: tuple[str, ...] = (
-    "请输入验证码",
-    "滑动验证",
-    "人机识别",
-    "captcha",
-    "wappass",
-    "qcaptcha",
-)
-
-
-def _is_captcha_response(*, url: str, text: str) -> bool:
-    """Return True if the response looks like a CAPTCHA / verification page.
-
-    Both the final URL and the body are checked. A 200 OK landing on a
-    CAPTCHA page is still useless to the LLM, so we surface it as an
-    error segment rather than letting it through as if it were search
-    results.
-    """
-    url_lc = url.lower()
-    if any(m in url_lc for m in _CAPTCHA_URL_MARKERS):
-        return True
-    text_lc = text.lower()
-    if any(m in text_lc for m in _CAPTCHA_TEXT_MARKERS):
-        return True
-    return False
-
-
-async def _fetch_and_concat(
-    query: str,
-    site_list: list[str],
-    *,
-    cache: _FileCache | None = None,
-    transport: httpx.AsyncBaseTransport | None = None,
-    timeout: float = 10.0,
-    user_agent: str = _DEFAULT_USER_AGENT,
-) -> str:
-    """Fetch `query` from each site in `site_list` concurrently and concatenate results.
-
-    Each site is fetched via httpx.AsyncClient with optional `transport`
-    (for tests). Cache behavior:
-      - If `cache` is None, every site is fetched over HTTP.
-      - If `cache` is set, hit returns the cached text without HTTP;
-        miss fetches and writes through to the cache.
-    Per-site failures are recorded as `[error: ...]` segments rather
-    than raised. If every site fails, the function raises
-    `ToolExecutionError` so the BaseAgent retry middleware can act.
-    """
-    if not site_list:
-        raise ValueError("site_list cannot be empty")
-
-    async def _one(site: str) -> tuple[str, str]:
-        # 1) Try cache first.
-        if cache is not None:
-            hit = cache.get(site=site, query=query)
-            if hit is not None:
-                return (site, hit)
-        # 2) HTTP fetch.
-        try:
-            client_kwargs: dict[str, Any] = {
-                "timeout": timeout,
-                "headers": {"User-Agent": user_agent},
-                # httpx's default for AsyncClient is follow_redirects=False.
-                # Bing returns 302 → cn.bing.com and Baidu returns 302 →
-                # captcha; both need to be followed to land on the real
-                # response before raise_for_status() runs.
-                "follow_redirects": True,
-            }
-            if transport is not None:
-                client_kwargs["transport"] = transport
-            async with httpx.AsyncClient(**client_kwargs) as client:
-                resp = await client.get(site, params={"q": query})
-                resp.raise_for_status()
-                text = _extract_text(resp.text)
-                if _is_captcha_response(url=str(resp.url), text=text):
-                    return (site, "[error: captcha page returned]")
-        except Exception as e:
-            return (site, f"[error: {type(e).__name__}: {e}]")
-        # 3) Write-through cache (best-effort).
-        if cache is not None:
-            try:
-                cache.set(site=site, query=query, text=text)
-            except OSError:
-                pass  # cache write failure does not fail the search
-        return (site, text)
-
-    results = await asyncio.gather(*(_one(s) for s in site_list))
-    if all(text.startswith("[error:") for _, text in results):
-        raise ToolExecutionError(f"all sites failed: {[s for s, _ in results]}")
-
-    parts = [f"[{site}]\n{text}\n" for site, text in results]
-    return "\n".join(parts)
 
 
 T = TypeVar("T")
@@ -131,10 +17,8 @@ T = TypeVar("T")
 class _Provider(Generic[T]):
     """Module-level singleton holder for a single value.
 
-    The single-instance design (per spec §1) lets us mutate `self.value`
-    on every `DeepResearchAgent.__init__` call, and the @tool _web_search
-    reads it via `.get()` whenever the LLM invokes the tool. Concurrent
-    multi-instance construction is not supported.
+    ``DeepResearchAgent.__init__`` writes ``self.value`` (the file cache);
+    the @tool ``_web_search`` reads it via ``.get()`` on every call.
     """
 
     def __init__(self) -> None:
@@ -149,74 +33,83 @@ class _Provider(Generic[T]):
         return self.value
 
 
-_SITE_LIST_PROVIDER: _Provider[list[str]] = _Provider()
 _CACHE_PROVIDER: _Provider[_FileCache | None] = _Provider()
+
+#: Fixed cache namespace — Tavily has no per-site fan-out, so every query
+#: is stored under a single ``site`` key to reuse ``_FileCache`` unchanged.
+_TAVILY_SITE_KEY: str = "tavily"
 
 
 class WebSearchInput(BaseModel):
-    """Input schema for the ``web_search`` tool.
-
-    A single ``query`` string is required — it is fanned out to every
-    site in the agent-configured ``site_list`` (so.com, m.baidu.com,
-    bing.com by default) and the responses are concatenated.
-    """
+    """Input schema for the ``web_search`` tool."""
 
     query: str = Field(
-        description=(
-            "Search keyword / natural-language query. Sent as the "
-            "`q` parameter to every site in the configured "
-            "`site_list`. Keep it concise — long queries hit URL "
-            "length limits on some sites."
-        ),
+        description="Search keyword / natural-language query sent to Tavily.",
         min_length=1,
     )
 
 
-# The explicit name drops the leading underscore so the LLM sees the
-# tool as "web_search", not "_web_search". The leading underscore is a
-# convention to mark "implementation, not the public name"; static
-# analysers that can't see through the @tool decorator will flag it as
-# unused — we suppress the warning here. The function IS used: it's
-# imported in ``tools/__init__.py`` and reached via the @tool object.
+def _format_tavily_results(results: dict[str, Any]) -> str:
+    """Render a Tavily search response into LLM-readable plain text.
+
+    Args:
+        results: Raw Tavily response dict (``answer`` + ``results`` list).
+
+    Returns:
+        A plain-text block: an optional ``[answer]`` summary followed by
+        numbered ``[i] title / url / content`` entries; ``[no results]``
+        when the result list is empty.
+    """
+    blocks: list[str] = []
+    answer = results.get("answer")
+    if answer:
+        blocks.append(f"[answer]\n{answer}")
+    for i, r in enumerate(results.get("results", []), start=1):
+        blocks.append(
+            f"[{i}] {r.get('title', '')}\n{r.get('url', '')}\n{r.get('content', '')}"
+        )
+    if not blocks:
+        return "[no results]"
+    return "\n\n".join(blocks)
+
+
 @tool(
     "web_search",
     description=(
-        "Search the configured site list (so.com, m.baidu.com, "
-        "bing.com by default) for `query` and return aggregated "
-        "plain text. Fans out concurrently (asyncio.gather) and "
-        "caches per-site responses to disk via `_FileCache`. Sites "
-        "that error or return a CAPTCHA page surface as "
-        "`[error: ...]` segments in the output rather than aborting "
-        "the search; if every site fails the tool raises "
-        "`ToolExecutionError` so the retry middleware can act. The "
-        "returned string is the concatenation `[site]\\ntext\\n` "
-        "blocks separated by blank lines."
+        "Search the web via the Tavily search API for `query` and return "
+        "aggregated plain text (titles, URLs, and content snippets). "
+        "Results are cached to disk via `_FileCache` under the `tavily` "
+        "namespace. Raises `ToolExecutionError` when the Tavily request "
+        "fails, so the retry middleware can act."
     ),
     args_schema=WebSearchInput,
 )
-async def _web_search(query: str) -> str:  # pyright: ignore[reportUnusedFunction]
-    """Search the configured site list for `query` and return aggregated text.
+def _web_search(query: str) -> str:  # pyright: ignore[reportUnusedFunction]
+    """Search Tavily for `query` and return aggregated text.
 
     Returns:
-        Plain-text concatenation of snippets from each configured
-        site, formatted as::
-
-            [<site-1>]
-            <text-1>
-
-            [<site-2>]
-            <text-2>
-
-            ...
-
-        Per-site failures appear as
-        ``[error: <ExceptionClass>: <msg>]`` segments; CAPTCHA
-        responses appear as ``[error: captcha page returned]``.
+        Plain-text concatenation of Tavily results (see
+        :func:`_format_tavily_results`).
 
     Raises:
-        ToolExecutionError: Every site in the configured list failed
-            (caught by the retry middleware).
+        ToolExecutionError: The Tavily search failed (wrapped from
+            ``TavilySearchError``).
     """
-    sites = _SITE_LIST_PROVIDER.get()
     cache = _CACHE_PROVIDER.get()
-    return await _fetch_and_concat(query, sites, cache=cache)
+    if cache is not None:
+        hit = cache.get(site=_TAVILY_SITE_KEY, query=query)
+        if hit is not None:
+            return hit
+
+    try:
+        results = TavilyAdapter().search(query)
+    except TavilySearchError as exc:
+        raise ToolExecutionError(f"web_search failed: {exc}") from exc
+
+    text = _format_tavily_results(results)
+    if cache is not None:
+        try:
+            cache.set(site=_TAVILY_SITE_KEY, query=query, text=text)
+        except OSError:
+            pass  # cache write failure does not fail the search
+    return text

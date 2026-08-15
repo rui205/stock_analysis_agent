@@ -1,11 +1,11 @@
-"""DeepResearchAgent: an LLM-driven deep-research agent.
+"""DeepResearchAgent: an LLM-driven deep-research agent for stock research.
 
-Bundles the ``load_skill`` / ``read_file`` tools (plus the ``web_search``
-@tool that fans out to a configured list of external search endpoints), and
-an opt-in ``run_command`` tool for executing the mx-* data-skill scripts.
-The system prompt is caller-supplied — pass
-``prompts/deepresearch_system_prompt.md`` for the full deep-research contract
-(think-first workflow, evidence chain + confidence, ``unknown`` handling).
+Bundles the ``load_skill`` / ``read_file`` tools plus the Tavily-backed
+``web_search`` @tool, and an opt-in ``run_command`` tool for executing the
+mx-* data-skill scripts. The stock symbol and research dimensions are
+injected into the system prompt before the LLM is called — pass
+``prompts/deepresearch_system_prompt.md`` for the full contract (think-first
+workflow, evidence chain + confidence, ``unknown`` handling).
 """
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from stock_analysis_agent.tools.shell import run_command
 from stock_analysis_agent.tools.skill import load_skill
 from stock_analysis_agent.tools.web_search import (
     _CACHE_PROVIDER,
-    _SITE_LIST_PROVIDER,
     _web_search,
 )
 
@@ -36,20 +35,6 @@ DEFAULT_SYSTEM_PROMPT: str = (
     "`prompts/deepresearch_system_prompt.md` as system_prompt for the full "
     "contract."
 )
-
-DEFAULT_SITE_LIST: list[str] = [
-    # Order matters for tie-breaking: 360 returns the most content per
-    # query in our environment, so it is tried first. m.baidu.com is the
-    # mobile Baidu endpoint — the desktop endpoint returns a captcha
-    # page for any non-cookied client, but mobile does not. Bing
-    # (302 → cn.bing.com) is the fallback that consistently returns
-    # parseable HTML. The two DuckDuckGo endpoints are removed: the
-    # `duckduckgo.com` domain is unreachable from this environment
-    # (ConnectTimeout) and returned ConnectError on every attempt.
-    "https://www.so.com/s",
-    "https://m.baidu.com/s",
-    "https://www.bing.com/search",
-]
 
 DEFAULT_CACHE_DIR: str = "~/.cache/stock-analysis-agent"
 DEFAULT_CACHE_TTL: float | None = 86400.0  # 24h in seconds
@@ -86,28 +71,28 @@ def render_research_prompt(
 
 
 class DeepResearchAgent(BaseAgent):
-    """LLM-driven deep-research agent that searches configured sites and skills.
+    """LLM-driven deep-research agent for stock research.
 
     Bundles three data-discovery tools — ``load_skill``, ``read_file``,
-    and the ``web_search`` @tool that fans out to the configured external
-    sites (fetching each concurrently via httpx, caching to local JSON
-    files) — plus an opt-in ``run_command`` for executing the mx-* data
-    skill scripts. The LLM decides what to search and when to synthesize.
+    and the Tavily-backed ``web_search`` @tool (caching results to local
+    JSON files) — plus an opt-in ``run_command`` for executing the mx-*
+    data skill scripts. The stock symbol and research dimensions are
+    injected into the system prompt before the LLM is called.
 
     ``load_skill`` and ``read_file`` are always on (mirroring
     ``StockAnalysisAgent``); ``run_command`` is opt-in via
     ``include_shell_tool`` because it is a privilege escalation. The
     full deep-research contract lives in
-    ``prompts/deepresearch_system_prompt.md`` — pass its contents as
-    ``system_prompt`` to get the think-first workflow, evidence chain +
-    confidence, and ``unknown`` handling.
+    ``prompts/deepresearch_system_prompt.md`` — loaded automatically when
+    ``symbol``/``dimensions`` are given, or pass its contents as
+    ``system_prompt`` explicitly.
 
     Construction overrides `BaseAgent`'s `max_retries` default from 2 → 3.
     Other BaseAgent parameters (model, temperature, name, ...) flow
     through via **kwargs.
 
     Single-instance: constructing a second agent updates the module-level
-    _SITE_LIST_PROVIDER and _CACHE_PROVIDER used by the @tool _web_search.
+    _CACHE_PROVIDER used by the @tool _web_search.
     """
 
     def __init__(
@@ -115,7 +100,6 @@ class DeepResearchAgent(BaseAgent):
         *,
         symbol: str | None = None,
         dimensions: Sequence[str] | None = None,
-        site_list: Sequence[str] | None = None,
         system_prompt: str | None = None,
         max_retries: int = 3,
         cache_dir: str | Path | None = None,
@@ -131,8 +115,6 @@ class DeepResearchAgent(BaseAgent):
             dimensions: Research-dimension labels injected into the system
                 prompt ``<!-- DIMENSIONS -->`` placeholder (joined with
                 ``、``). ``None`` renders it empty.
-            site_list: External search endpoints for ``web_search``.
-                Defaults to :data:`DEFAULT_SITE_LIST`.
             system_prompt: Caller-owned system prompt defining the deep
                 research contract. Defaults to
                 :data:`DEFAULT_SYSTEM_PROMPT`; pass the contents of
@@ -147,10 +129,6 @@ class DeepResearchAgent(BaseAgent):
             **kwargs: Forwarded to :class:`BaseAgent` (``model``,
                 ``temperature``, ``name``, ...).
         """
-        resolved_sites = list(site_list) if site_list is not None else list(DEFAULT_SITE_LIST)
-        if not resolved_sites:
-            raise ValueError("site_list cannot be empty")
-
         resolved_prompt = self._resolve_prompt(
             system_prompt=system_prompt,
             symbol=symbol,
@@ -167,12 +145,10 @@ class DeepResearchAgent(BaseAgent):
         # No sentinel needed because the function default IS the resolution.
 
         self._cache = _FileCache(resolved_dir, ttl_seconds=cache_ttl)
-        self._site_list = resolved_sites
         self._include_shell_tool = include_shell_tool
 
-        # Single-instance: write into module-level providers so the @tool
-        # callable (which is module-level) can read them.
-        _SITE_LIST_PROVIDER.value = resolved_sites
+        # Single-instance: write the cache into the module-level provider
+        # so the @tool can read it.
         _CACHE_PROVIDER.value = self._cache
 
         tools = [load_skill, read_file, _web_search]
@@ -210,10 +186,6 @@ class DeepResearchAgent(BaseAgent):
     def include_shell_tool(self) -> bool:
         """Whether the ``run_command`` tool is exposed to the LLM."""
         return self._include_shell_tool
-
-    @property
-    def site_list(self) -> list[str]:
-        return list(self._site_list)
 
     @property
     def cache_dir(self) -> Path:
