@@ -55,3 +55,19 @@ def test_empty_query_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
     with pytest.raises(TavilySearchError, match="non-empty"):
         TavilyAdapter().search("   ")
+
+
+def test_explicit_api_key_overrides_missing_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+    class _FakeClient:
+        def __init__(self, api_key: str) -> None:
+            self.api_key = api_key
+
+    monkeypatch.setattr(
+        "stock_analysis_agent.infra.tavily_adapter.TavilyClient", _FakeClient
+    )
+    adapter = TavilyAdapter(api_key="explicit-key")
+    assert adapter.client.api_key == "explicit-key"
