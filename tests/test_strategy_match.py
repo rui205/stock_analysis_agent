@@ -182,7 +182,7 @@ class TestBuildParser:
         assert args.symbol == "600519.SH"
         assert args.strategy == "x"
         assert args.delivery == "both"
-        assert args.recursion_limit == 80
+        assert args.recursion_limit == 120
         assert args.include_shell_tool is False
 
     def test_delivery_choices(self) -> None:

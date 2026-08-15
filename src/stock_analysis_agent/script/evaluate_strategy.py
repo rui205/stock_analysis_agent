@@ -65,6 +65,7 @@ _ORCHESTRATOR_TOOL_NAMES: list[str] = [
     "load_skill",
     "load_strategy",
     "run_analyze_stock",
+    "run_deepresearch",
 ]
 
 
@@ -345,8 +346,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Directory to write local markdown. Defaults to <project-root>/output/.",
     )
     parser.add_argument(
-        "--recursion-limit", type=int, default=80,
-        help="LangGraph recursion limit (default 80).",
+        "--recursion-limit", type=int, default=120,
+        help=(
+            "LangGraph recursion limit (default 120; covers the analyze-stock "
+            "subagent plus up to 3 deep-research fallback calls)."
+        ),
     )
     parser.add_argument("--verbose", action="store_true", help="Enable DEBUG-level logging.")
     return parser

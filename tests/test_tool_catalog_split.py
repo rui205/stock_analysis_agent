@@ -89,6 +89,7 @@ class TestOrchestratorToolCatalog:
         assert "load_skill" in names
         assert "load_strategy" in names
         assert "run_analyze_stock" in names
+        assert "run_deepresearch" in names
         # Sub-agent's data-discovery primitives MUST NOT leak into the
         # orchestrator's prompt — that's how the LLM ends up trying
         # to do raw research instead of delegating.
@@ -118,6 +119,7 @@ class TestOrchestratorToolCatalog:
         # Workflow glue must be present.
         assert "load_strategy" in names
         assert "run_analyze_stock" in names
+        assert "run_deepresearch" in names
         # And sub-agent-only tools must be absent.
         assert "read_file" not in names
         assert "list_dir" not in names
@@ -164,7 +166,7 @@ class TestCatalogInvariants:
             "read_file must remain a sub-agent-only primitive"
         )
         # Orchestrator-only: strategy glue + sub-agent runner.
-        assert {"load_strategy", "run_analyze_stock"}.issubset(
+        assert {"load_strategy", "run_analyze_stock", "run_deepresearch"}.issubset(
             orch_names - sub_names
         )
         # list_dir was removed from the project entirely.
