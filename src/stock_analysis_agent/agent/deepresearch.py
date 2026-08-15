@@ -1,10 +1,10 @@
-"""DeepSearchAgent: an LLM-driven deep-research agent.
+"""DeepResearchAgent: an LLM-driven deep-research agent.
 
 Bundles the ``load_skill`` / ``read_file`` tools (plus the ``web_search``
 @tool that fans out to a configured list of external search endpoints), and
 an opt-in ``run_command`` tool for executing the mx-* data-skill scripts.
 The system prompt is caller-supplied — pass
-``prompts/deepsearch_system_prompt.md`` for the full deep-research contract
+``prompts/deepresearch_system_prompt.md`` for the full deep-research contract
 (think-first workflow, evidence chain + confidence, ``unknown`` handling).
 """
 from __future__ import annotations
@@ -33,7 +33,7 @@ DEFAULT_SYSTEM_PROMPT: str = (
     "to gather data, and produce a report in which every conclusion "
     "carries an evidence chain and a confidence level, and unsearchable "
     "questions are marked `unknown` — never fabricate. Pass the bundled "
-    "`prompts/deepsearch_system_prompt.md` as system_prompt for the full "
+    "`prompts/deepresearch_system_prompt.md` as system_prompt for the full "
     "contract."
 )
 
@@ -55,7 +55,7 @@ DEFAULT_CACHE_DIR: str = "~/.cache/stock-analysis-agent"
 DEFAULT_CACHE_TTL: float | None = 86400.0  # 24h in seconds
 
 
-class DeepSearchAgent(BaseAgent):
+class DeepResearchAgent(BaseAgent):
     """LLM-driven deep-research agent that searches configured sites and skills.
 
     Bundles three data-discovery tools — ``load_skill``, ``read_file``,
@@ -68,7 +68,7 @@ class DeepSearchAgent(BaseAgent):
     ``StockAnalysisAgent``); ``run_command`` is opt-in via
     ``include_shell_tool`` because it is a privilege escalation. The
     full deep-research contract lives in
-    ``prompts/deepsearch_system_prompt.md`` — pass its contents as
+    ``prompts/deepresearch_system_prompt.md`` — pass its contents as
     ``system_prompt`` to get the think-first workflow, evidence chain +
     confidence, and ``unknown`` handling.
 
@@ -99,7 +99,7 @@ class DeepSearchAgent(BaseAgent):
             system_prompt: Caller-owned system prompt defining the deep
                 research contract. Defaults to
                 :data:`DEFAULT_SYSTEM_PROMPT`; pass the contents of
-                ``prompts/deepsearch_system_prompt.md`` for the full
+                ``prompts/deepresearch_system_prompt.md`` for the full
                 contract.
             max_retries: Tool-call retry budget for transient errors.
             cache_dir: Directory for the ``web_search`` file cache.

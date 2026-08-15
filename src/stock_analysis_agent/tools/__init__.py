@@ -50,9 +50,9 @@ from stock_analysis_agent.tools.web_search import _web_search
 # ``stock_analysis_agent.tools.web_search``. Importing it eagerly
 # here would re-enter ``stock_analysis_agent.tools.__init__`` during
 # the package-level import chain
-# (``stock_analysis_agent`` -> ``agent`` -> ``deepsearch`` ->
+# (``stock_analysis_agent`` -> ``agent`` -> ``deepresearch`` ->
 # ``tools.web_search`` evaluates ``tools.__init__`` -> ``strategy``
-# -> ``agent.stock_analysis`` -> ``agent.deepsearch`` (partial) =
+# -> ``agent.stock_analysis`` -> ``agent.deepresearch`` (partial) =
 # ``ImportError``). Resolve the names on demand via PEP 562.
 _STRATEGY_LAZY_NAMES: frozenset[str] = frozenset({
     "LoadStrategyInput",

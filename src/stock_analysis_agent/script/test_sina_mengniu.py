@@ -1,4 +1,4 @@
-"""One-shot smoke test: drive DeepSearchAgent against Sina search API.
+"""One-shot smoke test: drive DeepResearchAgent against Sina search API.
 
 Usage:
     python -m stock_analysis_agent.script.test_sina_mengniu
@@ -11,7 +11,7 @@ from pathlib import Path
 
 from langchain_core.messages import HumanMessage
 
-from stock_analysis_agent.agent.deepsearch import DeepSearchAgent
+from stock_analysis_agent.agent.deepresearch import DeepResearchAgent
 
 # Sina's /api/search endpoint accepts GET ?q=... and returns JSON. The
 # web_search tool appends ?q=<query> automatically, so the site URL must
@@ -53,7 +53,7 @@ def _print_event(event: dict) -> None:
 def main() -> int:
     site_list = [SINA_SEARCH_URL]
     with tempfile.TemporaryDirectory() as tmp:
-        agent = DeepSearchAgent(
+        agent = DeepResearchAgent(
             site_list=site_list,
             cache_dir=Path(tmp),
             cache_ttl=None,  # disable TTL so we always get fresh fetches

@@ -1,14 +1,14 @@
 """Stock analysis agent package."""
 from stock_analysis_agent.agent import (
     BaseAgent,
-    DeepSearchAgent,
+    DeepResearchAgent,
     StockAnalysisAgent,
     ToolExecutionError,
 )
 
 __all__ = [
     "BaseAgent",
-    "DeepSearchAgent",
+    "DeepResearchAgent",
     "StockAnalysisAgent",
     "ToolExecutionError",
 ]

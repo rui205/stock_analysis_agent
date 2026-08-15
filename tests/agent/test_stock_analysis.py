@@ -10,7 +10,7 @@ prompt, so these tests focus on what the agent *does* guarantee:
 
 Note: ``get_stock_snapshot`` and ``web_search`` are no longer wired into
 the agent (snapshot's ``market_data`` module is gone; web-search logic
-moves back into ``agent.deepsearch``); tests covering their exposure
+moves back into ``agent.deepresearch``); tests covering their exposure
 have been removed along with the related constructor parameters.
 """
 from __future__ import annotations

@@ -1,6 +1,6 @@
-"""Contract tests for the deepsearch system prompt.
+"""Contract tests for the deepresearch system prompt.
 
-Pins the requirements the deepsearch agent prompt must uphold:
+Pins the requirements the deepresearch agent prompt must uphold:
 
 1. Required inputs (stock code + research dimensions).
 2. The "think first" workflow — at least 3 concrete questions per dimension.
@@ -18,12 +18,12 @@ _PROMPT_FILE = (
     / "src"
     / "stock_analysis_agent"
     / "prompts"
-    / "deepsearch_system_prompt.md"
+    / "deepresearch_system_prompt.md"
 )
 
 
 def _read_prompt() -> str:
-    """Read the raw prompt template (no render function exists for deepsearch)."""
+    """Read the raw prompt template (no render function exists for deepresearch)."""
     return _PROMPT_FILE.read_text(encoding="utf-8")
 
 
@@ -41,7 +41,7 @@ def test_prompt_exists_and_has_frontmatter() -> None:
     """The prompt file exists and declares a ``name``/``description`` in frontmatter."""
     text = _read_prompt()
     assert text.startswith("---"), "missing YAML frontmatter fence"
-    assert re.search(r"^name:\s*deepsearch\s*$", text, re.MULTILINE), "frontmatter name must be deepsearch"
+    assert re.search(r"^name:\s*deepresearch\s*$", text, re.MULTILINE), "frontmatter name must be deepresearch"
     assert re.search(r"^description:\s*\S+", text, re.MULTILINE), "frontmatter description must be non-empty"
 
 

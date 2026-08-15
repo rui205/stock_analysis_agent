@@ -132,7 +132,7 @@ class _Provider(Generic[T]):
     """Module-level singleton holder for a single value.
 
     The single-instance design (per spec §1) lets us mutate `self.value`
-    on every `DeepSearchAgent.__init__` call, and the @tool _web_search
+    on every `DeepResearchAgent.__init__` call, and the @tool _web_search
     reads it via `.get()` whenever the LLM invokes the tool. Concurrent
     multi-instance construction is not supported.
     """
@@ -144,7 +144,7 @@ class _Provider(Generic[T]):
         if self.value is None:
             raise RuntimeError(
                 f"{type(self).__name__}.value was not initialized; "
-                "was DeepSearchAgent.__init__ called?"
+                "was DeepResearchAgent.__init__ called?"
             )
         return self.value
 

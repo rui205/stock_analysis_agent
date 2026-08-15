@@ -14,7 +14,7 @@ Directory listing is done through ``run_command(command="ls", argv=[...])``
 Note: ``get_stock_snapshot`` has been removed (the ``market_data``
 module is gone) and ``web_search`` is no longer wired into this agent
 either — its provider plumbing lived here only as a side effect of the
-shared module-level singletons, and ``agent.deepsearch`` owns that
+shared module-level singletons, and ``agent.deepresearch`` owns that
 logic now. The corresponding constructor parameters
 (``include_peers``, ``peer_count``, ``include_web_search``,
 ``site_list``, ``cache_dir``, ``cache_ttl``) were removed together

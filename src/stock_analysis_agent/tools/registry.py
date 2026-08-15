@@ -307,7 +307,7 @@ def list_tools() -> list[BaseTool]:
     here because it depends on
     :class:`stock_analysis_agent.agent.stock_analysis.StockAnalysisAgent`,
     and importing it eagerly breaks the package-level import order
-    (``stock_analysis_agent.__init__`` -> ``agent.deepsearch`` ->
+    (``stock_analysis_agent.__init__`` -> ``agent.deepresearch`` ->
     ``tools.web_search`` would re-enter this module).
     """
     from stock_analysis_agent.tools.strategy import (  # noqa: PLC0415

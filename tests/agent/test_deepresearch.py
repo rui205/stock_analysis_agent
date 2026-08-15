@@ -1,4 +1,4 @@
-"""Tests for stock_analysis_agent.agent.deepsearch.DeepSearchAgent."""
+"""Tests for stock_analysis_agent.agent.deepresearch.DeepResearchAgent."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,19 +8,19 @@ import pytest
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage
 
-from stock_analysis_agent.agent.deepsearch import DeepSearchAgent
+from stock_analysis_agent.agent.deepresearch import DeepResearchAgent
 
 from tests.agent.conftest import ToolAwareFakeChatModel, make_ai, make_tool_call
 
 
 def test_default_construction_uses_module_constants(tmp_path: Path) -> None:
     """No-arg construction uses DEFAULT_SITE_LIST, DEFAULT_SYSTEM_PROMPT, max_retries=3."""
-    from stock_analysis_agent.agent.deepsearch import (
+    from stock_analysis_agent.agent.deepresearch import (
         DEFAULT_SITE_LIST,
         DEFAULT_SYSTEM_PROMPT,
     )
 
-    agent = DeepSearchAgent(cache_dir=tmp_path, cache_ttl=None)
+    agent = DeepResearchAgent(cache_dir=tmp_path, cache_ttl=None)
     assert agent.site_list == DEFAULT_SITE_LIST
     assert agent.system_prompt_value == DEFAULT_SYSTEM_PROMPT
     assert agent.max_retries == 3
@@ -33,7 +33,7 @@ def test_default_site_list_excludes_unreachable_engines() -> None:
     runs in. Re-including them would silently make every web_search
     tool call time out and fail.
     """
-    from stock_analysis_agent.agent.deepsearch import DEFAULT_SITE_LIST
+    from stock_analysis_agent.agent.deepresearch import DEFAULT_SITE_LIST
 
     for url in DEFAULT_SITE_LIST:
         assert "duckduckgo" not in url, (
@@ -43,14 +43,14 @@ def test_default_site_list_excludes_unreachable_engines() -> None:
 
 
 def test_custom_site_list_overrides_default(tmp_path: Path) -> None:
-    agent = DeepSearchAgent(
+    agent = DeepResearchAgent(
         site_list=["https://x.test"], cache_dir=tmp_path, cache_ttl=None
     )
     assert agent.site_list == ["https://x.test"]
 
 
 def test_custom_system_prompt_overrides_default(tmp_path: Path) -> None:
-    agent = DeepSearchAgent(
+    agent = DeepResearchAgent(
         system_prompt="custom prompt", cache_dir=tmp_path, cache_ttl=None
     )
     assert agent.system_prompt_value == "custom prompt"
@@ -58,9 +58,9 @@ def test_custom_system_prompt_overrides_default(tmp_path: Path) -> None:
 
 def test_site_list_returns_copy(tmp_path: Path) -> None:
     """Mutating the returned site_list must not affect the agent or DEFAULT_SITE_LIST."""
-    from stock_analysis_agent.agent.deepsearch import DEFAULT_SITE_LIST
+    from stock_analysis_agent.agent.deepresearch import DEFAULT_SITE_LIST
 
-    agent = DeepSearchAgent(cache_dir=tmp_path, cache_ttl=None)
+    agent = DeepResearchAgent(cache_dir=tmp_path, cache_ttl=None)
     snapshot = agent.site_list
     snapshot.append("https://mutated.test")
     assert "https://mutated.test" not in agent.site_list
@@ -69,12 +69,12 @@ def test_site_list_returns_copy(tmp_path: Path) -> None:
 
 def test_empty_site_list_raises_at_construction(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="site_list cannot be empty"):
-        DeepSearchAgent(site_list=[], cache_dir=tmp_path, cache_ttl=None)
+        DeepResearchAgent(site_list=[], cache_dir=tmp_path, cache_ttl=None)
 
 
 def test_kwargs_pass_through_to_base_agent(tmp_path: Path) -> None:
     """model, temperature, name flow through to BaseAgent properties."""
-    agent = DeepSearchAgent(
+    agent = DeepResearchAgent(
         model="claude-opus-4-8",
         temperature=0.7,
         name="custom",
@@ -89,24 +89,24 @@ def test_kwargs_pass_through_to_base_agent(tmp_path: Path) -> None:
 def test_cache_dir_expands_tilde(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`~` in a str cache_dir is expanded via Path.expanduser()."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    agent = DeepSearchAgent(cache_dir="~/my-cache", cache_ttl=None)
+    agent = DeepResearchAgent(cache_dir="~/my-cache", cache_ttl=None)
     assert agent.cache_dir == (tmp_path / "my-cache").resolve()
 
 
 def test_cache_ttl_none_disables_expiration(tmp_path: Path) -> None:
     """cache_ttl=None means cache entries never expire."""
-    agent = DeepSearchAgent(cache_dir=tmp_path, cache_ttl=None)
+    agent = DeepResearchAgent(cache_dir=tmp_path, cache_ttl=None)
     agent._cache.set(site="https://a.test", query="q", text="cached")
     assert agent._cache.get(site="https://a.test", query="q") == "cached"
     assert agent.cache_ttl is None  # use public property
 
 
 def test_web_search_provider_reflects_latest_construction(tmp_path: Path) -> None:
-    """After constructing a DeepSearchAgent with site_list=[B], the
+    """After constructing a DeepResearchAgent with site_list=[B], the
     module-level site provider exposes [B] (single-instance contract)."""
     from stock_analysis_agent.tools.web_search import _SITE_LIST_PROVIDER
 
-    DeepSearchAgent(site_list=["https://b.test"], cache_dir=tmp_path, cache_ttl=None)
+    DeepResearchAgent(site_list=["https://b.test"], cache_dir=tmp_path, cache_ttl=None)
     assert _SITE_LIST_PROVIDER.get() == ["https://b.test"]
 
 
@@ -141,7 +141,7 @@ def test_tool_call_reaches_web_search_with_configured_sites(
     transport = httpx.MockTransport(_handler)
 
     # Build the agent first so providers are populated.
-    agent = DeepSearchAgent(
+    agent = DeepResearchAgent(
         site_list=["https://a.test", "https://b.test"],
         cache_dir=tmp_path,
         cache_ttl=None,
@@ -190,19 +190,19 @@ def test_tool_call_reaches_web_search_with_configured_sites(
 def test_second_agent_overwrites_provider_keeps_first_agent_intact(
     tmp_path: Path,
 ) -> None:
-    """Single-instance contract: when a second DeepSearchAgent is constructed,
+    """Single-instance contract: when a second DeepResearchAgent is constructed,
     the module-level _SITE_LIST_PROVIDER is overwritten (so @tool _web_search
     uses the new sites), but the first agent's `agent.site_list` keeps its
     original sites because each instance stores its own config on self."""
     from stock_analysis_agent.tools.web_search import _SITE_LIST_PROVIDER
 
-    agent1 = DeepSearchAgent(
+    agent1 = DeepResearchAgent(
         site_list=["https://first.test"], cache_dir=tmp_path, cache_ttl=None
     )
     assert agent1.site_list == ["https://first.test"]
     assert _SITE_LIST_PROVIDER.get() == ["https://first.test"]
 
-    DeepSearchAgent(
+    DeepResearchAgent(
         site_list=["https://second.test"], cache_dir=tmp_path, cache_ttl=None
     )
 
@@ -227,7 +227,7 @@ def test_default_tools_include_load_skill_read_file_web_search(tmp_path: Path) -
 
     ``run_command`` is opt-in (see ``test_run_command_omitted_by_default``).
     """
-    agent = DeepSearchAgent(cache_dir=tmp_path, cache_ttl=None)
+    agent = DeepResearchAgent(cache_dir=tmp_path, cache_ttl=None)
     tool_names = {t.name for t in agent.tools}
     assert "load_skill" in tool_names
     assert "read_file" in tool_names
@@ -242,13 +242,13 @@ def test_run_command_omitted_by_default(tmp_path: Path) -> None:
     arbitrary CLI programs, e.g. the mx-* skill scripts), so the safe
     default is to leave it out of the tool list.
     """
-    agent = DeepSearchAgent(cache_dir=tmp_path, cache_ttl=None)
+    agent = DeepResearchAgent(cache_dir=tmp_path, cache_ttl=None)
     assert "run_command" not in {t.name for t in agent.tools}
 
 
 def test_include_shell_tool_adds_run_command(tmp_path: Path) -> None:
     """When ``include_shell_tool=True``, ``run_command`` joins the tool list."""
-    agent = DeepSearchAgent(
+    agent = DeepResearchAgent(
         cache_dir=tmp_path, cache_ttl=None, include_shell_tool=True
     )
     tool_names = {t.name for t in agent.tools}
@@ -261,9 +261,9 @@ def test_include_shell_tool_adds_run_command(tmp_path: Path) -> None:
 
 def test_include_shell_tool_property(tmp_path: Path) -> None:
     """The ``include_shell_tool`` attribute reflects the constructor flag."""
-    assert DeepSearchAgent(cache_dir=tmp_path, cache_ttl=None).include_shell_tool is False
+    assert DeepResearchAgent(cache_dir=tmp_path, cache_ttl=None).include_shell_tool is False
     assert (
-        DeepSearchAgent(
+        DeepResearchAgent(
             cache_dir=tmp_path, cache_ttl=None, include_shell_tool=True
         ).include_shell_tool
         is True

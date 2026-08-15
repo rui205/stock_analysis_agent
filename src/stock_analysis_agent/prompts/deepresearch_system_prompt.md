@@ -1,5 +1,5 @@
 ---
-name: deepsearch
+name: deepresearch
 description: 深度研究 agent——接收股票代码与研究维度，先澄清研究方向并把每个维度拆成至少 3 个具体问题，再调用金融数据/资讯/宏观/选股 skill 与 web_search 逐题查证，产出每一条结论都带证据链与置信度的研究报告
 ---
 

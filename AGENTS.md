@@ -43,7 +43,7 @@ project/
 - `mcp/` — MCP server 入口,暴露给 Codex / 其他 LLM 客户端的资源与工具。
 - `web/` — HTTP 接口(FastAPI / Starlette router、request/response pydantic schema、依赖注入、依赖的服务)。与 `mcp/` 平行但面向通用 HTTP 客户端(浏览器、其他后端服务),不是 LLM 协议。
 - `tools/` — 无状态工具(纯函数 / LangChain `@tool`),可被 agent 调用。
-- `agent/` — Agent 类与配套 middleware,每个子类一个文件(如 `agent/deepsearch.py`)。
+- `agent/` — Agent 类与配套 middleware,每个子类一个文件(如 `agent/deepresearch.py`)。
 - `script/` — CLI 入口或一次性脚本(用 `python -m <package>.script.xxx` 运行)。
 - `conf/` — 配置加载(`pydantic-settings` / `BaseSettings`),**不允许 hardcode**。
 - `memory/` — 长期记忆 / 状态持久化(cache、conversation history、向量存储等)。
