@@ -36,7 +36,7 @@ BASE_URL_ENV_VAR: str = "ANTHROPIC_BASE_URL"
 
 # Default model identifier. ``MiniMax-M3`` is the model id routed via the
 # Anthropic-protocol gateway (see :data:`DEFAULT_MODEL_PROVIDER`).
-DEFAULT_MODEL: str = "MiniMax-M3"
+DEFAULT_MODEL: str = "qwen3.8-max"
 
 # The Anthropic SDK is used to call MiniMax because MiniMax exposes an
 # Anthropic-compatible endpoint (``$ANTHROPIC_BASE_URL``). LangChain's

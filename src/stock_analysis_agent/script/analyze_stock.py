@@ -1,27 +1,25 @@
-"""CLI entry: get_stock_snapshot + web_search agent → JSON analysis → local Markdown file.
+"""CLI entry: run the StockAnalysisAgent sub-agent and stream its report.
 
 Usage::
 
     python -m stock_analysis_agent.script.analyze_stock 02319.HK
-    python -m stock_analysis_agent.script.analyze_stock 600519.SH --no-peers
+    python -m stock_analysis_agent.script.analyze_stock 600519.SH --include-shell-tool
 
-The rendered report is written to ``<project-root>/output/<symbol>-<timestamp>.md``.
+The sub-agent's final text is the canonical output; per the bundled
+prompt policy the LLM itself publishes the report (e.g. as a Lark
+cloud document). This script parses, renders, and writes nothing.
 
 Exit codes:
-    0 — success (markdown written to ``output/``).
+    0 — success.
     1 — unhandled exception (caught at top level).
-    2 — agent output failed JSON / pydantic validation.
     3 — ``ToolExecutionError`` from the agent.
 """
 # pyright: reportUnusedFunction=false
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
-import time
-from datetime import datetime
 from pathlib import Path
 
 from langchain_core.messages import BaseMessage, HumanMessage
@@ -41,33 +39,52 @@ logger = logging.getLogger(__name__)
 
 EXIT_OK = 0
 EXIT_UNHANDLED = 1
-EXIT_PARSE = 2
 EXIT_TOOL = 3
+
+
+#: Tool names exposed to ``StockAnalysisAgent`` — injected into
+#: ``<!-- TOOL_INDEX -->`` so the system prompt matches the wired
+#: tools 1:1. The orchestrator tool ``run_analyze_stock`` is
+#: deliberately excluded: this is the sub-agent, not the
+#: orchestrator, and would never invoke itself.
+_SUBAGENT_TOOL_NAMES: list[str] = ["load_skill", "read_file"]
+
+
+def _extra_subagent_tool_names(include_shell_tool: bool) -> list[str]:
+    """Return additional tool names when ``include_shell_tool`` is True.
+
+    Args:
+        include_shell_tool: Mirrors the same-named
+            :class:`StockAnalysisAgent` constructor flag.
+
+    Returns:
+        ``["run_command"]`` when ``include_shell_tool`` is ``True``;
+        an empty list otherwise. The script injects the shell tool
+        into both the agent tool list and the prompt catalog via
+        :func:`run` so the two surfaces stay aligned.
+    """
+    return ["run_command"] if include_shell_tool else []
+
+
+def _subagent_tool_names(include_shell_tool: bool = False) -> list[str]:
+    """Compute the full sub-agent tool-name list for prompt rendering.
+
+    Args:
+        include_shell_tool: Whether ``run_command`` should be
+            advertised alongside the sub-agent's defaults.
+
+    Returns:
+        Sorted, deduplicated list of tool names matching what
+        :class:`StockAnalysisAgent` actually wires up for this run.
+    """
+    names = list(_SUBAGENT_TOOL_NAMES)
+    names.extend(_extra_subagent_tool_names(include_shell_tool))
+    return sorted(set(names))
 
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-
-#: Directory under the project root where the rendered Markdown is written.
-#: Resolved as the parent of ``src/`` so the path is stable regardless of
-#: the caller's CWD.
-_OUTPUT_DIR_NAME = "output"
-
-
-def _project_root() -> Path:
-    """Return the project root directory (the directory containing ``pyproject.toml``).
-
-    Resolved by walking up from this file: ``script/analyze_stock.py`` lives
-    four levels below the root (``src/<package>/script/...``).
-    """
-    return Path(__file__).resolve().parents[3]
-
-
-def output_dir() -> Path:
-    """Return the absolute path to the ``output/`` directory at the project root."""
-    return _project_root() / _OUTPUT_DIR_NAME
 
 
 #: Absolute path to the bundled system prompt template. Resolved at import time
@@ -81,66 +98,7 @@ _PROMPT_FILE: Path = Path(__file__).resolve().parents[1] / "prompts" / "system_p
 # ---------------------------------------------------------------------------
 
 
-def _strip_code_fence(text: str) -> str:
-    """Strip a leading/trailing markdown code fence if present.
-
-    LLMs frequently wrap JSON in ```` ```json ... ``` ```` even when told
-    not to. The schema validator downstream requires raw JSON, so we
-    remove the fence lines before parsing.
-    """
-    s = text.strip()
-    if not s.startswith("```"):
-        return s
-    lines = s.split("\n")
-    # Drop the opening fence (e.g., "```json" or just "```").
-    if lines and lines[0].startswith("```"):
-        lines = lines[1:]
-    # Drop the closing fence if present.
-    if lines and lines[-1].strip().startswith("```"):
-        lines = lines[:-1]
-    return "\n".join(lines).strip()
-
-
-def _extract_json_object(text: str) -> str:
-    """Return the longest balanced JSON object in ``text``.
-
-    The LLM sometimes:
-
-    * appends prose after the JSON (e.g. "如有需要可继续追问…"), or
-    * emits a short summary object first, then the full answer (e.g. a
-      bare ``Verdict`` followed by the complete ``StockAnalysis``), or
-    * wraps the answer in code fences (handled separately by
-      :func:`_strip_code_fence`).
-
-    We greedily collect every parseable JSON object via
-    :meth:`json.JSONDecoder.raw_decode` (which respects string escaping and
-    nested braces) and return the **longest** one. The full ``StockAnalysis``
-    is always longer than any sub-object (``Verdict``, ``PricePlan``, …),
-    so this picks the answer over a teaser.
-
-    Raises:
-        ValueError: if no balanced JSON object can be found in ``text``.
-    """
-    decoder = json.JSONDecoder()
-    candidates: list[str] = []
-    idx = 0
-    while True:
-        start = text.find("{", idx)
-        if start < 0:
-            break
-        try:
-            _, end = decoder.raw_decode(text, start)
-        except json.JSONDecodeError:
-            idx = start + 1
-            continue
-        candidates.append(text[start:end])
-        idx = end
-    if not candidates:
-        raise ValueError("no JSON object found in agent output")
-    return max(candidates, key=len)
-
-
-def _load_system_prompt() -> str:
+def _load_system_prompt(include_shell_tool: bool = False) -> str:
     """Load the system prompt from ``prompts/system_prompt.md``.
 
     The bundled template is a flat policy document with two template
@@ -155,9 +113,16 @@ def _load_system_prompt() -> str:
       hand-curated return-shape entry from
       :data:`tools.registry._TOOL_OUTPUTS`.
 
-    Runtime parameters (symbol, peer inclusion, web-search availability)
-    are passed directly to :class:`StockAnalysisAgent` instead, where
-    they control tool wiring rather than prompt content.
+    The catalog is filtered to the **sub-agent's actual tool set**
+    (:func:`_subagent_tool_names`) — same names, same order. The
+    orchestrator's ``run_analyze_stock`` and the strategy-only
+    ``load_strategy`` are deliberately omitted so the model doesn't
+    see tools it can't actually call.
+
+    Args:
+        include_shell_tool: When ``True``, ``run_command`` is also
+            advertised to the LLM (matches the constructor flag that
+            controls tool wiring). Default ``False``.
 
     Raises:
         FileNotFoundError: if the bundled ``system_prompt.md`` is missing
@@ -165,24 +130,14 @@ def _load_system_prompt() -> str:
     """
     template = _PROMPT_FILE.read_text(encoding="utf-8")
     skill_doc = format_skill_index_markdown(get_skill_index())
-    tool_doc = format_tool_index_markdown(get_tool_index())
+    tool_doc = format_tool_index_markdown(
+        get_tool_index(names=_subagent_tool_names(include_shell_tool))
+    )
     return (
         template
         .replace("<!-- SKILL_INDEX -->", skill_doc)
         .replace("<!-- TOOL_INDEX -->", tool_doc)
     )
-
-
-def build_output_path(symbol: str, output_dir: Path, now_epoch: int | None = None) -> Path:
-    """Build the path to which the rendered Markdown for ``symbol`` is written.
-
-    Files are timestamped so repeated runs do not clobber history. Pure
-    function — the caller is responsible for ``mkdir(parents=True)`` and
-    writing the file.
-    """
-    ts = now_epoch if now_epoch is not None else int(time.time())
-    safe_symbol = symbol.replace(".", "_").replace("/", "_")
-    return output_dir / f"stock-analysis-{safe_symbol}-{ts}.md"
 
 
 # ---------------------------------------------------------------------------
@@ -194,29 +149,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="analyze_stock",
         description=(
-            "Run an LLM agent on a stock symbol and write the rendered "
-            "analysis as a Markdown file under <project-root>/output/."
+            "Run an LLM agent on a stock symbol and stream its analysis "
+            "report; the LLM itself publishes the report per the bundled "
+            "prompt policy (e.g. as a Lark cloud document)."
         ),
     )
     parser.add_argument("symbol", help="Stock code, e.g. 02319.HK, 600519.SH, 000001.SZ")
-    parser.add_argument(
-        "--include-peers", dest="include_peers", action="store_true", default=True,
-        help="Include top-N industry peers in the snapshot (default).",
-    )
-    parser.add_argument(
-        "--no-peers", dest="include_peers", action="store_false",
-        help="Skip peer detection.",
-    )
-    parser.add_argument(
-        "--peer-count", type=int, default=2,
-        help="How many peers to compare (default 2).",
-    )
-    parser.add_argument(
-        "--no-web-search", dest="include_web_search", action="store_false",
-        default=True,
-        help="Disable the web_search tool (useful when search engines block the "
-             "scraper). Analysis relies on get_stock_snapshot + LLM knowledge only.",
-    )
     parser.add_argument(
         "--include-shell-tool", dest="include_shell_tool", action="store_true",
         default=False,
@@ -227,20 +165,15 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--output-dir", type=Path, default=None,
-        help=(
-            "Directory to write the rendered Markdown into. Defaults to "
-            "<project-root>/output/. Created if missing."
-        ),
-    )
-    parser.add_argument(
         "--recursion-limit", type=int, default=100,
         help=(
             "LangGraph recursion limit for the agent loop. Each tool call "
             "consumes 2–3 graph nodes (LLM decision → tool execution → back to "
             "LLM), so the bundled stock-analyst workflow — ~8 tool calls plus "
             "intermediate decisions — needs a budget of around 30–50 steps. "
-            "Default 50 matches StockAnalysisAgent's own default."
+            "Default 100 (above StockAnalysisAgent's constructor default of 50) "
+            "because shell-enabled runs execute the full mx-* skill workflow "
+            "and exhaust smaller budgets mid-run."
         ),
     )
     parser.add_argument(
@@ -264,12 +197,9 @@ def run(args: argparse.Namespace) -> int:
     # ``prompts/system_prompt.md``. ``StockAnalysisAgent`` is a
     # schema-agnostic low-level agent, so the script (not the agent) owns
     # the output contract.
-    system_prompt = _load_system_prompt()
+    system_prompt = _load_system_prompt(include_shell_tool=args.include_shell_tool)
     agent = StockAnalysisAgent(
         symbol=args.symbol,
-        include_peers=args.include_peers,
-        peer_count=args.peer_count,
-        include_web_search=args.include_web_search,
         include_shell_tool=args.include_shell_tool,
         recursion_limit=args.recursion_limit,
         system_prompt=system_prompt,
@@ -286,11 +216,16 @@ def run(args: argparse.Namespace) -> int:
     )]
     try:
         last_text: str = ""
+        # Diagnostics are only consumed by the verbose report below —
+        # collecting them unconditionally would grow two lists for the
+        # whole run on every event. Gate on ``args.verbose`` so normal
+        # runs pay nothing.
         tool_calls: list[tuple[str, str]] = []
         event_kinds: list[str] = []
         for event in agent.stream(messages):
             kind = event.get("event", "")
-            event_kinds.append(kind)
+            if args.verbose:
+                event_kinds.append(kind)
             if kind == "on_chat_model_stream":
                 # Stream chunks: data["chunk"].content may be a string or list.
                 chunk = event.get("data", {}).get("chunk", {})
@@ -301,7 +236,7 @@ def run(args: argparse.Namespace) -> int:
                     for block in content:
                         if isinstance(block, dict) and block.get("type") == "text":
                             last_text += block.get("text", "")
-            elif kind == "on_chat_model_end":
+            elif kind == "on_chat_model_end" and args.verbose:
                 output = event.get("data", {}).get("output", {})
                 for tc in getattr(output, "tool_calls", None) or []:
                     name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
@@ -319,7 +254,7 @@ def run(args: argparse.Namespace) -> int:
         logger.info(last_text)
     if args.verbose:
         from collections import Counter
-        logger.info("========== EVENT KINDS ({len(event_kinds)}) ==========")
+        logger.info(f"========== EVENT KINDS ({len(event_kinds)}) ==========")
         for k, c in Counter(event_kinds).most_common():
             logger.info(f"  {k}: {c}")
         logger.info("========== LLM TOOL CALLS ==========")

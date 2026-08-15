@@ -20,6 +20,8 @@ from pathlib import Path
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from stock_analysis_agent.tools.lark_errors import classify_lark_error
+
 logger = logging.getLogger(__name__)
 
 #: Hard cap on stdout/stderr size returned to the LLM. Larger output is
@@ -143,11 +145,25 @@ def _run_subprocess(
             f"(cwd={work_dir}); check `which {command.split('/')[-1]}`"
         ) from None
 
-    return _format_result(
+    result = _format_result(
         cmd=cmd, cwd=work_dir, returncode=proc.returncode,
         stdout=proc.stdout or "", stderr=proc.stderr or "",
         timed_out=False, timeout=timeout,
     )
+    # On non-zero exit, surface a structured ``[LARK_*]`` signal line
+    # above the raw output so the agent can pattern-match lark-cli
+    # failures (auth_required, confirmation_required, generic errors)
+    # without parsing the JSON envelope in stderr itself. The classifier
+    # is a no-op for non-lark commands and for envelopes it cannot
+    # parse — see ``tools.lark_errors.classify_lark_error``.
+    signal = classify_lark_error(
+        command=command,
+        stderr=proc.stderr or "",
+        exit_code=proc.returncode,
+    )
+    if signal is not None:
+        return f"{signal}\n{result}"
+    return result
 
 
 class RunCommandInput(BaseModel):
@@ -161,10 +177,15 @@ class RunCommandInput(BaseModel):
 
     command: str = Field(
         description=(
-            "The executable name or absolute path (e.g. `\"lark-cli\"`). "
-            "Pass the program name ONLY — flags and arguments belong "
-            "in `argv`. Never pass a shell pipeline (`a && b`, `a | b`) "
-            "here; the tool does not invoke a shell."
+            "The executable name or absolute path (e.g. `\"lark-cli\"`, "
+            "`\"ls\"`, `\"cat\"`, `\"python3\"`). Pass the program name "
+            "ONLY — flags AND positional arguments (paths, queries, "
+            "script files) ALL belong in `argv`. Never pass a shell "
+            "pipeline (`a && b`, `a | b`, `;`, `>`, `<`, backticks) or "
+            "a program+args concatenation (`\"ls /path\"`, "
+            "`\"python3 script.py --foo\"`) here; the tool does not "
+            "invoke a shell. To chain commands, make multiple calls or "
+            "explicitly invoke `bash`."
         ),
         min_length=1,
     )
@@ -172,9 +193,11 @@ class RunCommandInput(BaseModel):
         description=(
             "Argument list as a list of strings, passed without shell "
             "expansion. Quoting, glob characters, and newlines are "
-            "preserved verbatim. Example: to run "
-            "`lark-cli docs +create --content <xml>...`, pass "
-            "`[\"docs\", \"+create\", \"--content\", \"<xml>...\"]`."
+            "preserved verbatim. Every flag and positional argument "
+            "goes here — never concatenated into `command`. Example: "
+            "to run `lark-cli docs +create --content <xml>...`, pass "
+            "`[\"docs\", \"+create\", \"--content\", \"<xml>...\"]`. "
+            "To list a directory, pass `[\"-la\", \"src/.../skill\"]`."
         ),
     )
     cwd: str | None = Field(
@@ -200,25 +223,48 @@ class RunCommandInput(BaseModel):
 @tool(
     "run_command",
     description=(
-        "Run a CLI subprocess (lark-cli, git, curl, jq, ls, ...) and "
-        "return its stdout, stderr, and exit code as a formatted text "
-        "block. The canonical use case is invoking "
-        "`lark-cli docs +create --content <xml>...` to publish an "
-        "analysis report as a 飞书 cloud document. `argv` is passed "
-        "as a list — NO shell expansion, so quoting/glob/newlines "
-        "are preserved verbatim. stdout/stderr are truncated at 30KB; "
-        "default timeout is 60s (subprocess is killed on timeout). "
-        "`command` must be on PATH or an absolute path.\n\n"
-        "ARGUMENT SHAPE — common LLM mistakes to avoid: pass "
-        "`command` as the single program name (e.g. `\"lark-cli\"`) "
-        "and split flags into `argv` as separate strings — do NOT "
-        "concatenate flags into `command`, do NOT pass shell "
-        "pipelines (`a && b`, `a | b`) to `command` (there is no "
-        "shell). Example: to run "
-        "`lark-cli docs +fetch --api-version v2 --doc X`, call with "
-        "`command=\"lark-cli\"`, "
-        "`argv=[\"docs\", \"+fetch\", \"--api-version\", \"v2\", "
-        "\"--doc\", \"X\"]`."
+        "Run a CLI subprocess and return its stdout, stderr, and exit "
+        "code as a formatted text block. The canonical use cases are:\n"
+        "  • invoking `lark-cli docs +create --content <xml>...` to "
+        "publish an analysis report as a 飞书 cloud document;\n"
+        "  • running skill scripts, e.g. `python3 <skill>/scripts/"
+        "get_data.py --query \"...\" --indicators \"...\"`;\n"
+        "  • browsing the local filesystem via `ls`, `cat`, `head`, "
+        "`pwd`, `find` (this is the ONLY way to list a directory — "
+        "there is no separate `list_dir` tool).\n\n"
+        "`argv` is passed as a list — NO shell expansion, so quoting / "
+        "glob / newlines are preserved verbatim. stdout/stderr are "
+        "truncated at 30KB; default timeout is 60s (subprocess is "
+        "killed on timeout). `command` must be on PATH or an absolute "
+        "path.\n\n"
+        "ARGUMENT SHAPE — split program from args, ALWAYS: `command` is "
+        "the SINGLE executable name (e.g. `\"lark-cli\"`, `\"ls\"`, "
+        "`\"python3\"`); EVERY flag AND positional argument (paths, "
+        "queries, script names) goes into `argv` as a separate string. "
+        "The tool does NOT invoke a shell — there is no `cd`, no `&&`, "
+        "no glob expansion, no variable interpolation.\n\n"
+        "Two common LLM mistakes to avoid:\n"
+        "  1. Concatenating program + args into `command` — e.g. "
+        "`command=\"ls /some/path\"` or `command=\"python3 "
+        "scripts/get_data.py --query \\\"...\\\"\"`. Both are rejected "
+        "(whitespace in `command`). Split them: `command=\"ls\", "
+        "argv=[\"/some/path\"]`.\n"
+        "  2. Shell pipelines in `command` — e.g. `command=\"pwd && "
+        "ls src/...\"` or `command=\"cat foo | grep bar\"`. Rejected "
+        "(shell metacharacters). Either make two separate calls or "
+        "explicitly invoke bash: `command=\"bash\", argv=[\"-lc\", "
+        "\"<full shell command>\"]`.\n\n"
+        "Concrete examples (all correct shapes):\n"
+        "  • list a directory: `command=\"ls\", "
+        "argv=[\"-la\", \"src/stock_analysis_agent/skill\"]`\n"
+        "  • read a small file: `command=\"cat\", argv=[\"path/to/"
+        "file\"]`\n"
+        "  • run a skill script: `command=\"python3\", "
+        "argv=[\"<skill>/scripts/get_data.py\", \"--query\", \"...\", "
+        "\"--indicators\", \"...\"]`\n"
+        "  • publish to lark: `command=\"lark-cli\", argv=[\"docs\", "
+        "\"+create\", \"--api-version\", \"v2\", \"--content\", "
+        "\"<xml>...\"]`"
     ),
     args_schema=RunCommandInput,
 )

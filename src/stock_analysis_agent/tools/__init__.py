@@ -14,7 +14,8 @@ Public API:
     read_file             — @tool wrapper for reading any UTF-8 file under the project root
     run_command           — @tool wrapper for running CLI subprocesses
     load_strategy         — @tool wrapper for reading a strategy .md from conf/strategies/
-    run_analyze_stock     — @tool wrapper that runs the StockAnalysisAgent subagent and returns a summary
+    run_analyze_stock     — @tool wrapper that runs the StockAnalysisAgent subagent and returns its Markdown report verbatim
+    set_subagent_include_shell_tool — propagate the orchestrator's shell opt-in to the run_analyze_stock subagent
     _list_strategy_names  — alphabetical list of strategy file stems under conf/strategies/
     _parse_strategy_frontmatter — extract simple key: value pairs from a strategy frontmatter block
     LoadStrategyInput     — input schema for load_strategy
@@ -60,6 +61,7 @@ _STRATEGY_LAZY_NAMES: frozenset[str] = frozenset({
     "_parse_strategy_frontmatter",
     "load_strategy",
     "run_analyze_stock",
+    "set_subagent_include_shell_tool",
 })
 
 __all__ = [
@@ -87,6 +89,7 @@ __all__ = [
     "_parse_strategy_frontmatter",
     "load_strategy",
     "run_analyze_stock",
+    "set_subagent_include_shell_tool",
 ]
 
 def __getattr__(name: str) -> object:

@@ -143,11 +143,9 @@ _TOOL_OUTPUTS: dict[str, ToolOutputSpec] = {
     },
     "run_analyze_stock": {
         "output": (
-            "`str` — markdown summary of the `StockAnalysis` JSON returned "
-            "by the embedded subagent, OR an `[ERROR] analyze_stock tool "
-            "failed: ...` string on `ToolExecutionError`, OR an `[ERROR] "
-            "StockAnalysis JSON parse failed: ...` string with up to "
-            "2000 chars of raw LLM output on validation failure."
+            "`str` — verbatim Markdown report produced by the embedded "
+            "`StockAnalysisAgent` subagent, OR an `[ERROR] analyze_stock "
+            "tool failed: ...` string on `ToolExecutionError`."
         ),
     },
 }
@@ -327,19 +325,37 @@ def list_tools() -> list[BaseTool]:
     return sorted(all_tools, key=lambda t: t.name)
 
 
-def get_tool_index() -> list[ToolIndexEntry]:
+def get_tool_index(names: list[str] | None = None) -> list[ToolIndexEntry]:
     """Build the tool catalog injected into the system prompt.
 
     For each tool returned by :func:`list_tools`, introspect the
     ``args_schema`` (Pydantic model) for input rows and look up the
     hand-curated :class:`ToolOutputSpec` for the return shape.
 
+    Args:
+        names: Optional allowlist of tool names. When provided, only
+            entries whose ``name`` is in this list are returned. Used
+            by per-agent scripts to advertise the *exact* tool set
+            wired into their agent, not the full project-wide catalog.
+            Unknown names are silently dropped so a typo in the
+            allowlist doesn't break prompt rendering.
+
+            When ``None`` (the default), every registered tool is
+            returned — this preserves the documentary "show me
+            everything" behaviour for callers like tests that want
+            the full surface.
+
     Returns:
-        One :class:`ToolIndexEntry` per registered tool, in the same
+        One :class:`ToolIndexEntry` per matched tool, in the same
         alphabetical order as :func:`list_tools`.
     """
+    tools = list_tools()
+    if names is not None:
+        allowed = set(names)
+        tools = [t for t in tools if t.name in allowed]
+
     index: list[ToolIndexEntry] = []
-    for tool_obj in list_tools():
+    for tool_obj in tools:
         description = tool_obj.description or ""
         index.append(
             ToolIndexEntry(

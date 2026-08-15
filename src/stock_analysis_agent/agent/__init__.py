@@ -3,16 +3,14 @@
 Public API:
     BaseAgent              — wrapper around langchain.agents.create_agent
     DeepSearchAgent        — concrete LLM-driven deep-research agent
-    StockAnalysisAgent     — LLM-driven stock analysis (snapshot + web_search)
+    StockAnalysisAgent     — LLM-driven stock analysis (skill/file/shell tools, caller-owned prompt)
     StrategyMatchAgent     — LLM-driven strategy-vs-fundamentals matching
-    StockAnalysis          — JSON contract returned by StockAnalysisAgent
     StrategyMatchReport    — JSON contract returned by StrategyMatchAgent
     StrategyCriterionMatch — single criterion match inside StrategyMatchReport
     ToolExecutionError     — raised when tool calls exhaust retries
 """
 from __future__ import annotations
 
-from stock_analysis_agent.agent.analysis_schema import StockAnalysis
 from stock_analysis_agent.agent.base import BaseAgent
 from stock_analysis_agent.agent.deepsearch import DeepSearchAgent
 from stock_analysis_agent.agent.exceptions import ToolExecutionError
@@ -27,7 +25,6 @@ __all__ = [
     "BaseAgent",
     "DeepSearchAgent",
     "StockAnalysisAgent",
-    "StockAnalysis",
     "StrategyCriterionMatch",
     "StrategyMatchAgent",
     "StrategyMatchReport",

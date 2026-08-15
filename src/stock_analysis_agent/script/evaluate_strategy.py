@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import shutil
 import subprocess
 import sys
@@ -44,6 +45,49 @@ EXIT_BAD_STRATEGY = 4
 DeliveryMode = Literal["local", "feishu", "both"]
 
 _OUTPUT_DIR_NAME = "output"
+
+
+#: Tool names exposed to ``StrategyMatchAgent`` (the orchestrator) —
+#: injected into ``<!-- TOOL_INDEX -->`` so the system prompt matches
+#: the wired tools 1:1. The sub-agent's data-discovery surface
+#: (``read_file``) is deliberately excluded: the
+#: orchestrator's job is workflow glue, not raw research.
+_ORCHESTRATOR_TOOL_NAMES: list[str] = [
+    "load_skill",
+    "load_strategy",
+    "run_analyze_stock",
+]
+
+
+def _extra_orchestrator_tool_names(include_shell_tool: bool) -> list[str]:
+    """Return additional orchestrator tool names when shell is enabled.
+
+    Args:
+        include_shell_tool: Mirrors the same-named
+            :class:`StrategyMatchAgent` constructor flag.
+
+    Returns:
+        ``["run_command"]`` when ``include_shell_tool`` is ``True``;
+        an empty list otherwise. Kept in sync with the agent tool list
+        so the prompt catalog never claims a tool that isn't wired up.
+    """
+    return ["run_command"] if include_shell_tool else []
+
+
+def _orchestrator_tool_names(include_shell_tool: bool = False) -> list[str]:
+    """Compute the orchestrator's full tool-name list for prompt rendering.
+
+    Args:
+        include_shell_tool: Whether ``run_command`` should be
+            advertised alongside the orchestrator's defaults.
+
+    Returns:
+        Sorted, deduplicated list of tool names matching what
+        :class:`StrategyMatchAgent` actually wires up for this run.
+    """
+    names = list(_ORCHESTRATOR_TOOL_NAMES)
+    names.extend(_extra_orchestrator_tool_names(include_shell_tool))
+    return sorted(set(names))
 
 
 def _project_root() -> Path:
@@ -85,8 +129,20 @@ def _format_strategy_index() -> str:
     return "\n".join(lines) + "\n"
 
 
-def _load_system_prompt() -> str:
+def _load_system_prompt(include_shell_tool: bool = False) -> str:
     """Load the strategy-match system prompt with both indexes injected.
+
+    The catalog (``<!-- TOOL_INDEX -->``) is filtered to the
+    **orchestrator's actual tool set**
+    (:func:`_orchestrator_tool_names`) — not the full project-wide
+    registry. The sub-agent's ``read_file`` is deliberately omitted so
+    the orchestrator isn't tempted to do raw research itself
+    (orchestration ≠ research).
+
+    Args:
+        include_shell_tool: When ``True``, ``run_command`` is also
+            advertised to the LLM (matches the constructor flag that
+            controls tool wiring). Default ``False``.
 
     Raises:
         FileNotFoundError: if the bundled ``strategy_match_system_prompt.md``
@@ -94,7 +150,9 @@ def _load_system_prompt() -> str:
     """
     template = _PROMPT_FILE.read_text(encoding="utf-8")
     strategy_doc = _format_strategy_index()
-    tool_doc = format_tool_index_markdown(get_tool_index())
+    tool_doc = format_tool_index_markdown(
+        get_tool_index(names=_orchestrator_tool_names(include_shell_tool))
+    )
     return (
         template
         .replace("<!-- STRATEGY_INDEX -->", strategy_doc)
@@ -164,6 +222,39 @@ def render_local_markdown(report: StrategyMatchReport, now_iso: str) -> str:
     )
 
 
+_FEISHU_DOC_URL_RE = re.compile(r"""https://[^\s"']+/docx/[A-Za-z0-9]+""")
+
+
+def _extract_feishu_doc_url(stdout: str) -> str | None:
+    """Extract the new document URL from ``lark-cli docs +create`` output.
+
+    lark-cli prints a JSON envelope —
+    ``{"ok": true, "data": {"document": {"url": ...}}}`` — pretty-printed
+    by default, so the last stdout line is ``}``, not the URL. Parse the
+    envelope first; fall back to scanning for a Feishu ``docx`` URL when
+    the payload is not parseable JSON.
+
+    Args:
+        stdout: Raw stdout of the ``lark-cli docs +create`` invocation.
+
+    Returns:
+        The document URL, or ``None`` when it cannot be located.
+    """
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        document = data.get("document") if isinstance(data, dict) else None
+        if isinstance(document, dict):
+            url = document.get("url")
+            if isinstance(url, str) and url:
+                return url
+    match = _FEISHU_DOC_URL_RE.search(stdout)
+    return match.group(0) if match else None
+
+
 def _publish_to_feishu(report: StrategyMatchReport) -> str | None:
     """Best-effort publish the rendered Markdown to a Feishu cloud doc.
 
@@ -171,16 +262,24 @@ def _publish_to_feishu(report: StrategyMatchReport) -> str | None:
     document URL on success, or ``None`` if ``lark-cli`` is missing /
     not authenticated / fails — the caller is expected to log a
     warning and fall back to the local markdown.
+
+    The rendered Markdown starts with a single H1, which lark-cli (with
+    ``--doc-format markdown``) extracts as the document title, so no
+    separate ``--title`` flag is passed.
     """
     if shutil.which("lark-cli") is None:
         logger.warning("lark-cli not on PATH; skipping Feishu publish")
         return None
 
     content = render_local_markdown(report, datetime.now(tz=timezone.utc).strftime("%Y-%m-%d"))
-    title = f"[{report.symbol}] 策略匹配报告 · {report.strategy_name}"
     try:
         proc = subprocess.run(
-            ["lark-cli", "docs", "+create", "--title", title, "--content", content],
+            [
+                "lark-cli", "docs", "+create",
+                "--api-version", "v2",
+                "--doc-format", "markdown",
+                "--content", content,
+            ],
             capture_output=True,
             text=True,
             timeout=60,
@@ -191,8 +290,7 @@ def _publish_to_feishu(report: StrategyMatchReport) -> str | None:
     if proc.returncode != 0:
         logger.warning("lark-cli returned %d: %s", proc.returncode, proc.stderr.strip()[:500])
         return None
-    url = next((line.strip() for line in reversed(proc.stdout.splitlines()) if line.strip()), None)
-    return url
+    return _extract_feishu_doc_url(proc.stdout)
 
 
 def _validate_strategy(name: str) -> None:
@@ -223,7 +321,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--include-shell-tool", dest="include_shell_tool", action="store_true", default=False,
-        help="Expose run_command so the agent can call lark-cli directly.",
+        help=(
+            "Expose run_command so the agent can call lark-cli directly. The "
+            "flag also propagates to the analyze-stock subagent so its "
+            "stock-analysis workflow can execute the mx-* skill data scripts "
+            "(without it the subagent emits a degraded report)."
+        ),
     )
     parser.add_argument(
         "--output-dir", type=Path, default=None,
@@ -241,7 +344,7 @@ def run(args: argparse.Namespace) -> int:
     """Top-level orchestration. Returns the process exit code."""
     _validate_strategy(args.strategy)
 
-    system_prompt = _load_system_prompt()
+    system_prompt = _load_system_prompt(include_shell_tool=args.include_shell_tool)
     agent = StrategyMatchAgent(
         system_prompt=system_prompt,
         include_shell_tool=args.include_shell_tool,
@@ -264,7 +367,12 @@ def run(args: argparse.Namespace) -> int:
                         if isinstance(block, dict) and block.get("type") == "text":
                             last_text += block.get("text", "")
     except ToolExecutionError as e:
-        logger.error("agent tools failed: %s", e)
+        # The middleware wraps the original exception via ``raise ... from
+        # exc``; surface its type so failures with empty/ambiguous messages
+        # (e.g. recursion-budget exhaustion) remain diagnosable from the log.
+        cause = e.__cause__
+        suffix = f" (cause: {type(cause).__name__})" if cause is not None else ""
+        logger.error("agent tools failed: %s%s", e, suffix)
         return EXIT_TOOL
 
     try:

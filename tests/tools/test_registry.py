@@ -32,9 +32,9 @@ class TestListTools:
     """Discovery: every self-built @tool callable is surfaced."""
 
     def test_list_tools_includes_every_self_built_tool(self) -> None:
-        """The three bundled @tools are all in the catalog.
+        """The bundled @tools are all in the catalog.
 
-        Adding a fourth tool requires (a) appending it to ``list_tools``
+        Adding a new tool requires (a) appending it to ``list_tools``
         and (b) adding a ``_TOOL_OUTPUTS`` entry — this assertion
         catches the case where someone forgot (a).
 
@@ -46,10 +46,15 @@ class TestListTools:
             "load_skill",
             "read_file",
             "run_command",
+            "load_strategy",
+            "run_analyze_stock",
         }
         assert expected.issubset(names), (
             f"missing tools: {expected - names}; "
             "update list_tools() in tools/registry.py"
+        )
+        assert "list_dir" not in names, (
+            "list_dir was removed — use run_command(command='ls', argv=[...])"
         )
         assert "get_stock_snapshot" not in names, (
             "get_stock_snapshot should be absent from list_tools() — "
@@ -167,6 +172,49 @@ class TestGetToolIndex:
         listed = {t.name for t in list_tools()}
         indexed = {e["name"] for e in get_tool_index()}
         assert listed == indexed
+
+    def test_index_covers_every_listed_tool_when_names_filter_is_passed(
+        self,
+    ) -> None:
+        """``names=`` matches every entry — no dropped names, no extras."""
+        all_names = sorted(t.name for t in list_tools())
+        index = get_tool_index(names=all_names)
+        indexed = sorted(e["name"] for e in index)
+        assert indexed == all_names
+
+    def test_names_filter_drops_nonmatching_entries(self) -> None:
+        """Only the names in the allowlist survive the filter."""
+        keep = ["load_skill", "read_file"]
+        index = get_tool_index(names=keep)
+        names = [e["name"] for e in index]
+        assert sorted(names) == sorted(keep)
+        # Every returned entry must have full schema contents.
+        for entry in index:
+            assert entry["description"]
+            assert entry["output"]
+            assert isinstance(entry["inputs"], list)
+
+    def test_names_filter_silently_drops_unknown_names(self) -> None:
+        """Typo in the allowlist shouldn't break prompt rendering.
+
+        The filter intersects with the registered tool list; names that
+        don't match any @tool are dropped quietly so a single typo
+        can't take down a script.
+        """
+        keep = ["load_skill", "definitely_not_a_tool", "read_file"]
+        index = get_tool_index(names=keep)
+        names = sorted(e["name"] for e in index)
+        assert names == ["load_skill", "read_file"]
+
+    def test_names_none_returns_full_catalog(self) -> None:
+        """``names=None`` is the documentary "show everything" path."""
+        full = {e["name"] for e in get_tool_index()}
+        same = {e["name"] for e in get_tool_index(names=None)}
+        assert full == same
+        # And ``list_tools`` itself, since ``get_tool_index`` is the
+        # catalog wrapper.
+        listed = {t.name for t in list_tools()}
+        assert same == listed
 
     def test_known_tools_have_nonempty_input_descriptions(self) -> None:
         """Field-level descriptions are present so the rendered table is useful."""

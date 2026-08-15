@@ -1,4 +1,4 @@
-"""Strategy-related tools: load a Markdown strategy file.
+"""Strategy-related tools: load a Markdown strategy file + subagent wrapper.
 
 The ``load_strategy`` tool reads a single ``.md`` file under
 ``src/<package>/conf/strategies/`` and returns its full content (YAML
@@ -9,18 +9,21 @@ that flow into the output report.
 The dynamic ``run_analyze_stock`` tool lives in this same module so
 both strategy-related tools are colocated; it depends on
 :class:`StockAnalysisAgent` and is exercised separately in Task 4.
+
+The sub-agent returns Markdown (per the bundled ``stock-analysis`` skill),
+so ``run_analyze_stock`` is a thin wrapper that just forwards the
+agent's final text back to the caller — no JSON parsing, no schema
+validation, no remapping. The caller (the strategy-match LLM) gets
+the raw report and decides what to do with it.
 """
 from __future__ import annotations
 
-import json
-from collections.abc import Iterator
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
-from stock_analysis_agent.agent.analysis_schema import StockAnalysis
 from stock_analysis_agent.agent.exceptions import ToolExecutionError
 from stock_analysis_agent.agent.stock_analysis import StockAnalysisAgent
 
@@ -33,6 +36,31 @@ _STRATEGIES_DIR = Path(__file__).resolve().parents[1] / "conf" / "strategies"
 #: :func:`_parse_strategy_frontmatter` so the report sees only the
 #: fields the schema binds to.
 _STRATEGY_FRONTMATTER_KEYS: frozenset[str] = frozenset({"name", "version", "description"})
+
+#: Whether the ``run_analyze_stock`` sub-agent gets the ``run_command``
+#: tool. Written by :class:`StrategyMatchAgent.__init__` (mirrors the
+#: module-singleton provider pattern in ``tools.web_search``); read by
+#: :func:`_run_subagent_and_collect` on every tool invocation. The
+#: bundled ``stock-analysis`` workflow executes its mx-* skill scripts
+#: via shell — without ``run_command`` the sub-agent can only emit a
+#: degraded, LLM-knowledge-only report. Default ``False`` keeps the
+#: standalone tool behaviour unchanged.
+_subagent_include_shell_tool: bool = False
+
+
+def set_subagent_include_shell_tool(enabled: bool) -> None:
+    """Set whether the ``run_analyze_stock`` sub-agent gets ``run_command``.
+
+    Called by :class:`StrategyMatchAgent.__init__` so the embedded
+    sub-agent inherits the orchestrator's shell opt-in.
+
+    Args:
+        enabled: ``True`` to wire ``run_command`` into the sub-agent
+            (and advertise it in its system-prompt tool catalog);
+            ``False`` to run the sub-agent without shell access.
+    """
+    global _subagent_include_shell_tool
+    _subagent_include_shell_tool = enabled
 
 
 def _list_strategy_names() -> tuple[str, ...]:
@@ -112,7 +140,7 @@ def load_strategy(name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _extract_final_text(events: Iterator[dict]) -> str:
+def _extract_final_text(events) -> str:
     """Accumulate ``on_chat_model_stream`` text into one string."""
     last_text = ""
     for event in events:
@@ -129,58 +157,38 @@ def _extract_final_text(events: Iterator[dict]) -> str:
     return last_text
 
 
-def _strip_code_fence(text: str) -> str:
-    """Strip a leading/trailing markdown code fence if present."""
-    s = text.strip()
-    if not s.startswith("```"):
-        return s
-    lines = s.split("\n")
-    if lines and lines[0].startswith("```"):
-        lines = lines[1:]
-    if lines and lines[-1].strip().startswith("```"):
-        lines = lines[:-1]
-    return "\n".join(lines).strip()
+def _run_subagent_and_collect(symbol: str) -> str:
+    """Inner helper — builds the subagent, runs it, returns the final text.
 
+    The sub-agent is driven by the same ``prompts/system_prompt.md`` as
+    ``script.analyze_stock``; per the bundled ``stock-analysis`` skill,
+    its final text is a Markdown report. We return it verbatim — no
+    parsing, no remapping.
+    """
+    from stock_analysis_agent.script.analyze_stock import _load_system_prompt
 
-def _extract_json_object(text: str) -> str:
-    """Return the longest balanced JSON object in ``text``."""
-    decoder = json.JSONDecoder()
-    candidates: list[str] = []
-    idx = 0
-    while True:
-        start = text.find("{", idx)
-        if start < 0:
-            break
-        try:
-            _, end = decoder.raw_decode(text, start)
-        except json.JSONDecodeError:
-            idx = start + 1
-            continue
-        candidates.append(text[start:end])
-        idx = end
-    if not candidates:
-        raise ValueError("no JSON object found in agent output")
-    return max(candidates, key=len)
-
-
-def _render_analysis_summary(symbol: str, analysis: StockAnalysis) -> str:
-    """Render the key fields of ``StockAnalysis`` as a markdown summary."""
-    risks_md = "\n".join(f"- [{r.type}/{r.severity}] {r.description}" for r in analysis.risks[:3])
-    return (
-        f"# StockAnalysis 摘要 — {symbol}\n\n"
-        f"- verdict: {analysis.verdict.decision} ({analysis.verdict.decision_label}) "
-        f"confidence={analysis.verdict.confidence}\n"
-        f"- summary: {analysis.verdict.summary}\n"
-        f"- weighted_total: {analysis.scores.weighted_total}/10 "
-        f"(fundamental={analysis.scores.fundamental}, "
-        f"technical={analysis.scores.technical}, "
-        f"news={analysis.scores.news_catalyst}, "
-        f"peer={analysis.scores.peer_positioning})\n"
-        f"- current_price: {analysis.price_plan.current_price}, "
-        f"target: {analysis.price_plan.target_price}, "
-        f"stop_loss: {analysis.price_plan.stop_loss}\n"
-        f"- 主要风险:\n{risks_md or '- (无)'}\n"
+    # The sub-agent inherits the orchestrator's shell opt-in (written
+    # by ``StrategyMatchAgent.__init__``): the bundled stock-analysis
+    # workflow runs its mx-* skill scripts via ``run_command``, and
+    # without it the sub-agent degrades to an LLM-knowledge-only
+    # report. The prompt catalog follows the same flag so it never
+    # advertises a tool the sub-agent can't actually call.
+    shell_enabled = _subagent_include_shell_tool
+    system_prompt = _load_system_prompt(include_shell_tool=shell_enabled)
+    sub = StockAnalysisAgent(
+        symbol=symbol,
+        system_prompt=system_prompt,
+        include_shell_tool=shell_enabled,
+        # Shell-enabled runs execute the full mx-* workflow: each data
+        # fetch costs ~4 graph steps (run_command + read_file, each
+        # preceded by an LLM decision round) plus skill loads and
+        # reasoning — observed runs exhaust the constructor default of
+        # 50 mid-workflow. Mirror ``script.analyze_stock``'s CLI default
+        # (100) for the identical workflow.
+        recursion_limit=100,
     )
+    events = sub.stream([HumanMessage(f"按 system prompt 的 schema 给出 {symbol} 的分析报告。")])
+    return _extract_final_text(events)
 
 
 class RunAnalyzeStockInput(BaseModel):
@@ -191,58 +199,45 @@ class RunAnalyzeStockInput(BaseModel):
         description=(
             "Stock symbol to analyze, e.g. `600519.SH`, `02319.HK`, "
             "`AAPL.US`. The tool runs the existing `StockAnalysisAgent` "
-            "subagent on this symbol and returns a structured summary."
+            "subagent on this symbol and returns its Markdown report verbatim."
         ),
     )
-
-
-def _run_subagent_and_collect(symbol: str) -> str:
-    """Inner helper — builds the subagent, runs it, returns raw final text."""
-    from stock_analysis_agent.script.analyze_stock import _load_system_prompt
-
-    system_prompt = _load_system_prompt()
-    sub = StockAnalysisAgent(
-        symbol=symbol,
-        system_prompt=system_prompt,
-        include_peers=True,
-        include_web_search=True,
-        include_shell_tool=False,
-        recursion_limit=50,
-    )
-    events = sub.stream([HumanMessage(f"按 system prompt 的 schema 给出 {symbol} 的分析报告。")])
-    return _extract_final_text(events)
 
 
 @tool(
     "run_analyze_stock",
     description=(
         "Run the existing `StockAnalysisAgent` subagent on a stock "
-        "symbol and return a structured markdown summary of its "
-        "`StockAnalysis` output. Returns a markdown summary on success; "
-        "an `[ERROR] analyze_stock tool failed: ...` string on "
-        "`ToolExecutionError`; or `[ERROR] StockAnalysis JSON parse "
-        "failed: ...` with up to 2000 chars of raw LLM output on "
-        "validation failure."
+        "symbol and return its Markdown analysis verbatim. Returns the "
+        "Markdown report on success; an `[ERROR] analyze_stock tool "
+        "failed: ...` string when the sub-agent run fails (tool retries "
+        "exhausted or recursion budget exceeded)."
     ),
     args_schema=RunAnalyzeStockInput,
 )
 def run_analyze_stock(symbol: str) -> str:
-    """Synchronously run the analyze-stock subagent and summarise the result."""
+    """Synchronously run the analyze-stock subagent and forward its Markdown output.
+
+    The sub-agent emits Markdown directly (per ``prompts/system_prompt.md`` +
+    the bundled ``stock-analysis`` skill). No JSON parsing or remapping is
+    performed here — the caller decides how to consume the report.
+
+    Args:
+        symbol: Stock symbol, e.g. ``"600519.SH"``.
+
+    Returns:
+        The sub-agent's final Markdown text on success, or an ``[ERROR]``-prefixed
+        string when the sub-agent's tool retries are exhausted or its
+        graph runs out of recursion budget mid-workflow.
+    """
     try:
-        last_text = _run_subagent_and_collect(symbol)
-    except ToolExecutionError as e:
+        return _run_subagent_and_collect(symbol)
+    except (ToolExecutionError, RecursionError) as e:
+        # ``RecursionError`` covers langgraph's ``GraphRecursionError``
+        # (a subclass): if the sub-agent exhausts its step budget
+        # mid-workflow, degrade to the soft ``[ERROR]`` contract instead
+        # of letting the exception escape and abort the orchestrator run.
         return f"[ERROR] analyze_stock tool failed: {e}"
-
-    try:
-        json_str = _extract_json_object(_strip_code_fence(last_text))
-        analysis = StockAnalysis.model_validate_json(json_str)
-    except (ValueError, ValidationError) as e:
-        return (
-            f"[ERROR] StockAnalysis JSON parse failed: {e}; "
-            f"raw first 2000 chars:\n{last_text[:2000]}"
-        )
-
-    return _render_analysis_summary(symbol, analysis)
 
 
 __all__ = [
@@ -250,7 +245,7 @@ __all__ = [
     "RunAnalyzeStockInput",
     "_list_strategy_names",
     "_parse_strategy_frontmatter",
-    "_render_analysis_summary",
     "load_strategy",
     "run_analyze_stock",
+    "set_subagent_include_shell_tool",
 ]

@@ -41,13 +41,13 @@ load_strategy(name="<strategy_name>")
 run_analyze_stock(symbol="<symbol>")
 ```
 
-返回 markdown 摘要(verdict + score + key 风险)。agent 用这个摘要作为策略匹配的
-数据来源;不需要重新跑所有 skill。
+返回 subagent 产出的完整 Markdown 分析报告(verbatim,不做任何格式化或抽字段)。
+agent 自己从报告里捞需要的章节(verdict / score / 主要风险等)喂给策略匹配逻辑;
+不需要重新跑所有 skill。
 
 失败处理:
 - `[ERROR] analyze_stock tool failed: ...` → agent 自决:可基于已有信息给 "avoid" +
   confidence="low",或直接中止并在报告中说明数据缺失
-- `[ERROR] StockAnalysis JSON parse failed: ...` → 同上,raw 文本里有提示可参考
 
 ### Step 3. 逐条匹配
 
@@ -141,6 +141,7 @@ lark-cli 命令细节、`lark-cli docs +create` / `+update` 选择、`<callout>`
 ## Common mistakes
 
 - **匹配原则时编造数据** → evidence 必须引用 subagent 摘要里的真实字段;无数据时给 mismatch + reasoning="基本面数据缺失,无法验证"
+- **orchestrator 绕过 subagent 自己跑数** → 基本面数据一律以 `run_analyze_stock` 返回的报告为准。即使本 agent 带 `run_command`(用于 lark-cli 发布),也不要自己调 mx-* skill 补数——自己跑出来的结果进不了匹配上下文,只会浪费查询;数据不全时在报告里如实标注"数据缺失",由用户决定是否开 `--include-shell-tool` 重跑
 - **`criterion_matches` 漏掉策略中所有可验证原则** → 必须穷举,原则描述不清时给 partial + reasoning="原则表述模糊"
 - **`fit_score` 超 0-10 范围** → schema 校验会失败,务必保证
 - **`overall_fit` 选错** → 严格按 §4 触发条件,不要因为 "分数高" 就直接 buy

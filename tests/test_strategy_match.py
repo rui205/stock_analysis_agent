@@ -1,6 +1,6 @@
 """Tests for evaluate_strategy CLI helpers + StrategyMatchAgent wiring.
 
-Layered test strategy (matches tests/test_analyze_stock.py style):
+Layered test strategy:
 
 * Pure helpers: ``build_output_path``, ``render_local_markdown``,
   ``_format_strategy_index``, ``_strip_code_fence``,
@@ -270,18 +270,44 @@ class TestPublishToFeishu:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _restore_subagent_shell_flag():
+    """Snapshot/restore the ``tools.strategy`` sub-agent shell flag.
+
+    ``StrategyMatchAgent.__init__`` writes the module-level provider
+    read by ``run_analyze_stock``; without restoration a test that
+    constructs an agent with ``include_shell_tool=True`` would leak
+    state into later test modules.
+    """
+    import stock_analysis_agent.tools.strategy as strategy_tools
+
+    original = strategy_tools._subagent_include_shell_tool
+    yield
+    strategy_tools._subagent_include_shell_tool = original
+
+
 class TestStrategyMatchAgent:
     def test_rejects_empty_system_prompt(self) -> None:
         with pytest.raises(ValueError, match="system_prompt"):
             StrategyMatchAgent(system_prompt="")
 
-    def test_default_tools_include_strategy_tools(self) -> None:
+    def test_default_tools_are_orchestration_only(self) -> None:
+        """The orchestrator owns strategy + sub-agent + skill only — not
+        the sub-agent's data-discovery surface (``read_file``).
+        Sharing the latter would let the orchestrator bypass the
+        sub-agent and produce raw reports itself.
+        """
         agent = StrategyMatchAgent(system_prompt="hello")
-        names = sorted(t.name for t in agent.tools)
+        names = set(t.name for t in agent.tools)
+        # Workflow glue (must-have):
         assert "load_strategy" in names
         assert "run_analyze_stock" in names
         assert "load_skill" in names
-        assert "read_file" in names
+        # Sub-agent's data-discovery surface must NOT leak here:
+        assert "read_file" not in names
+        # list_dir was removed entirely from the project.
+        assert "list_dir" not in names
+        # Shell is opt-in:
         assert "run_command" not in names
 
     def test_shell_tool_opt_in(self) -> None:
@@ -292,3 +318,23 @@ class TestStrategyMatchAgent:
     def test_recursion_limit_default_is_80(self) -> None:
         agent = StrategyMatchAgent(system_prompt="hello")
         assert agent.recursion_limit == 80
+
+    def test_shell_flag_propagates_to_subagent_provider_when_enabled(self) -> None:
+        """``include_shell_tool=True`` must reach the module-level flag that
+        ``run_analyze_stock`` reads — the sub-agent's stock-analysis
+        workflow needs ``run_command`` to execute the mx-* skill scripts.
+        """
+        import stock_analysis_agent.tools.strategy as strategy_tools
+
+        StrategyMatchAgent(system_prompt="hello", include_shell_tool=True)
+        assert strategy_tools._subagent_include_shell_tool is True
+
+    def test_shell_flag_propagates_to_subagent_provider_by_default(self) -> None:
+        """The default constructor resets the provider to ``False`` so a
+        shell-enabled agent constructed earlier cannot leak its flag.
+        """
+        import stock_analysis_agent.tools.strategy as strategy_tools
+
+        strategy_tools._subagent_include_shell_tool = True
+        StrategyMatchAgent(system_prompt="hello")
+        assert strategy_tools._subagent_include_shell_tool is False

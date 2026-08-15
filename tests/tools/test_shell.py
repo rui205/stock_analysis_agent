@@ -6,12 +6,20 @@ The shell tool lets the LLM invoke arbitrary CLI programs (most importantly
 """
 from __future__ import annotations
 
+import stat
+from pathlib import Path
+
 import pytest
 
 from stock_analysis_agent.tools.shell import (
     MAX_OUTPUT_BYTES,
     _run_subprocess,
     run_command,
+)
+from stock_analysis_agent.tools.lark_errors import (
+    AUTH_REQUIRED_PREFIX,
+    CONFIRMATION_REQUIRED_PREFIX,
+    LARK_ERROR_PREFIX,
 )
 
 
@@ -230,3 +238,130 @@ def test_tool_invoke_runs_command_and_returns_formatted_string() -> None:
     result = run_command.invoke({"command": "echo", "argv": ["hi"], "timeout": 10})
     assert isinstance(result, str)
     assert "hi" in result
+
+
+# ---------------------------------------------------------------------------
+# run_command + lark_errors integration — the [LARK_*] signal injection.
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_lark_cli(tmp_path: Path, *, stderr_payload: str,
+                        exit_code: int) -> Path:
+    """Write a tiny shell-script "lark-cli" that emits ``stderr_payload``
+    to stderr and exits with ``exit_code``. The script is named
+    ``lark-cli`` and chmod'ed executable so the basename check passes.
+    """
+    script = tmp_path / "lark-cli"
+    script.write_text(
+        "#!/bin/sh\n"
+        f"printf %s {stderr_payload!r} >&2\n"
+        f"exit {exit_code}\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return script
+
+
+def test_run_subprocess_prepends_lark_auth_required_signal(tmp_path) -> None:
+    """A fake lark-cli that emits an ``auth_required`` envelope produces a
+    result whose first line is ``[LARK_AUTH_REQUIRED]`` with the original
+    ``error.type`` echoed back — so the agent can pattern-match reliably.
+    """
+    payload = (
+        '{"ok": false, "error": {"type": "auth_required", '
+        '"message": "no token", '
+        '"hint": "run lark-cli auth login --scope docs:document:create"}}'
+    )
+    fake = _make_fake_lark_cli(tmp_path, stderr_payload=payload, exit_code=1)
+    result = _run_subprocess(str(fake), ["docs", "+create"], cwd=None, timeout=10)
+
+    first_line = result.split("\n", 1)[0]
+    assert first_line.startswith(AUTH_REQUIRED_PREFIX)
+    # The signal carries type + hint so the agent has actionable context.
+    assert "type='auth_required'" in first_line
+    assert "lark-cli auth login" in first_line
+    # The normal formatted output is preserved AFTER the signal line.
+    assert "--- stderr ---" in result
+    assert payload in result
+    assert "=== exit=1 ===" in result
+
+
+def test_run_subprocess_prepends_lark_confirmation_required_signal(tmp_path) -> None:
+    """``confirmation_required`` envelopes (exit code 10) emit the dedicated
+    sentinel — distinct from ``[LARK_AUTH_REQUIRED]`` — so the agent can
+    pick the right handler (don't auto-add ``--yes``; ask the user).
+    """
+    payload = (
+        '{"ok": false, "error": {"type": "confirmation_required", '
+        '"message": "drive +delete requires confirmation", '
+        '"hint": "add --yes to confirm", '
+        '"risk": {"level": "high-risk-write", "action": "drive +delete"}}}'
+    )
+    fake = _make_fake_lark_cli(tmp_path, stderr_payload=payload, exit_code=10)
+    result = _run_subprocess(str(fake), ["drive", "+delete"], cwd=None, timeout=10)
+
+    first_line = result.split("\n", 1)[0]
+    assert first_line.startswith(CONFIRMATION_REQUIRED_PREFIX)
+    assert "action='drive +delete'" in first_line
+    assert "add --yes" in first_line
+
+
+def test_run_subprocess_prepends_lark_generic_error_signal(tmp_path) -> None:
+    """Unknown envelope error types still get the generic ``[LARK_ERROR]``
+    sentinel — better than leaving the LLM to parse raw JSON.
+    """
+    payload = (
+        '{"ok": false, "error": {"type": "permission_violations", '
+        '"message": "missing scope: docs:document:create"}}'
+    )
+    fake = _make_fake_lark_cli(tmp_path, stderr_payload=payload, exit_code=1)
+    result = _run_subprocess(str(fake), ["docs", "+create"], cwd=None, timeout=10)
+
+    first_line = result.split("\n", 1)[0]
+    assert first_line.startswith(LARK_ERROR_PREFIX)
+    assert "permission_violations" in first_line
+
+
+def test_run_subprocess_does_not_inject_signal_for_non_lark_failure() -> None:
+    """A non-lark command that exits non-zero (e.g. ``false``) must NOT
+    receive any ``[LARK_*]`` prefix — the classifier short-circuits on
+    command basename. Backwards-compat guard.
+    """
+    result = _run_subprocess("false", [], cwd=None, timeout=10)
+    assert "[LARK_" not in result
+    assert "=== exit=1 ===" in result
+
+
+def test_run_subprocess_does_not_inject_signal_when_lark_succeeds(tmp_path) -> None:
+    """A successful lark-cli run (exit 0) must NOT receive a signal — the
+    classifier short-circuits on zero exit code.
+    """
+    fake = _make_fake_lark_cli(tmp_path, stderr_payload="", exit_code=0)
+    result = _run_subprocess(str(fake), ["docs", "+create"], cwd=None, timeout=10)
+    assert "[LARK_" not in result
+    assert "=== exit=0 ===" in result
+
+
+def test_run_subprocess_does_not_inject_signal_when_lark_stderr_is_plain_text(tmp_path) -> None:
+    """lark-cli not installed (or older versions) emits plain-text stderr
+    without a JSON envelope. The classifier returns ``None`` and the
+    formatted output is unchanged — no false positives.
+    """
+    fake = _make_fake_lark_cli(
+        tmp_path, stderr_payload="lark-cli: command not found", exit_code=127,
+    )
+    result = _run_subprocess(str(fake), ["docs", "+create"], cwd=None, timeout=10)
+    assert "[LARK_" not in result
+    assert "lark-cli: command not found" in result
+
+
+def test_run_subprocess_filenotfound_for_missing_lark_does_not_inject_signal(tmp_path) -> None:
+    """A truly missing ``lark-cli`` (FileNotFoundError path) raises an
+    exception, never returns a formatted result, and thus never injects
+    a ``[LARK_*]`` signal. Sanity check that the signal injection is
+    strictly confined to the successful subprocess.run path.
+    """
+    with pytest.raises(FileNotFoundError):
+        _run_subprocess(
+            str(tmp_path / "does-not-exist-lark-cli"),
+            ["docs", "+create"], cwd=None, timeout=5,
+        )

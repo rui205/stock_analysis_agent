@@ -134,10 +134,15 @@ lark-cli docs +create --api-version v2 \
 
 | 场景 | 处理 |
 |------|------|
-| `lark-cli` 未安装 / 认证失败 | **降级**:会话内输出 7 节报告 markdown 正文,顶部加 `⚠️ 飞书文档创建失败(<err>),以下为会话内输出` |
+| `lark-cli` 未安装 (`FileNotFoundError`) | **降级**:会话内输出 7 节报告 markdown 正文,顶部加 `⚠️ 飞书文档创建失败(<err>),以下为会话内输出` |
+| `lark-cli` 认证失败 (`[LARK_AUTH_REQUIRED]` 信号) | **不要降级**。先 `load_skill("lark-shared")` 拿到授权 split-flow,然后:`lark-cli auth login --scope "docs:document:create" --no-wait --json` → 生成二维码 → 把 `verification_url` + 二维码发给用户 → **本轮结束**。等用户回复"已授权"后再跑 `--device-code` 完成登录,回到 `lark-cli docs +create` 重试原步骤。 |
+| `lark-cli` 高风险门禁 (`[LARK_CONFIRMATION_REQUIRED]`, exit 10) | 把 `action` / `hint` 贴给用户,**明确告知是高风险操作**,等用户显式同意;同意后在原 argv 末尾加 `--yes` 重试。**禁止**默认加 `--yes` 静默重试。 |
+| `lark-cli` 其他结构化错误 (`[LARK_ERROR]` 信号) | 把 `type` / `message` / `hint` 贴给用户,按 `error.hint` 指示修复(常见: `permission_violations` → 提示用户去飞书开发者后台开 scope;`rate_limited` → 1s/3s 指数退避后再试 2 次)。仍失败才降级。 |
 | 文档创建成功但内容截断/部分 block 报错 | 重试 1 次(同一个 `--content` 整体重发);仍失败则降级同上 |
 | 用户本轮明确说"不要建文档,直接说结论" | 跳过 `lark-doc` 步骤,会话内只输出结论摘要(不输出 7 节正文) |
 | 网络/限流错误 | 最多重试 2 次(指数退避 1s/3s);失败后降级 |
+
+> **关键规则**:`run_command` 在 `lark-cli` 失败时会把 `[LARK_AUTH_REQUIRED]` / `[LARK_CONFIRMATION_REQUIRED]` / `[LARK_ERROR]` 作为结果第一行返回。看到这些前缀,按上面表格分支处理 —— **认证失败不允许直接降级 markdown**,必须走 `lark-shared` 授权 split-flow。
 
 降级路径在每轮都要准备好,不要让 lark-cli 报错时无所适从。
 

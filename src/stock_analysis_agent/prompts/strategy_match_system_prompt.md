@@ -54,7 +54,7 @@ description: 根据用户自定义的选股策略,评估个股是否符合策略
       "reasoning": "为什么是这个评级"
     }
   ],
-  "raw_analysis_excerpt": "从 StockAnalysis 复用的关键字段(verdict+score+key 风险)",
+  "raw_analysis_excerpt": "从 subagent 返回的 Markdown 报告里摘取的关键章节摘要(verdict+score+主要风险等)",
   "action_recommendation": "仓位/等待/放弃,30-200 字",
   "confidence": "high | medium | low"
 }
