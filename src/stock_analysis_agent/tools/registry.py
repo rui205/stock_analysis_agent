@@ -148,6 +148,13 @@ _TOOL_OUTPUTS: dict[str, ToolOutputSpec] = {
             "tool failed: ...` string on `ToolExecutionError`."
         ),
     },
+    "run_deepresearch": {
+        "output": (
+            "`str` — verbatim Markdown report produced by the embedded "
+            "`DeepResearchAgent` subagent, OR an `[ERROR] deepresearch "
+            "tool failed: ...` string on `ToolExecutionError`."
+        ),
+    },
 }
 
 
@@ -313,6 +320,7 @@ def list_tools() -> list[BaseTool]:
     from stock_analysis_agent.tools.strategy import (  # noqa: PLC0415
         load_strategy,
         run_analyze_stock,
+        run_deepresearch,
     )
 
     all_tools: list[BaseTool] = [
@@ -321,6 +329,7 @@ def list_tools() -> list[BaseTool]:
         read_file,
         run_analyze_stock,
         run_command,
+        run_deepresearch,
     ]
     return sorted(all_tools, key=lambda t: t.name)
 
