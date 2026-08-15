@@ -125,7 +125,6 @@ class TestRunAnalyzeStockTool:
         assert out == md_streamed
         fake_cls.assert_called_once()
         kwargs = fake_cls.call_args.kwargs
-        assert kwargs["symbol"] == "600519.SH"
         assert kwargs["include_shell_tool"] is False
 
     def test_tool_failure_returns_error_string(self, monkeypatch: pytest.MonkeyPatch) -> None:

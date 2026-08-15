@@ -54,25 +54,16 @@ _SKILL_FRONTMATTER_KEYS = frozenset({"name", "description"})
 def _parse_frontmatter(text: str) -> dict[str, str]:
     """Extract ``name`` and ``description`` from YAML frontmatter.
 
-    Lightweight regex-style parser — only handles the subset of YAML
-    the bundled SKILL.md files actually use:
-
-    * ``name: <value>``  — single line, no quotes.
-    * ``description: <value>``  — single line, optional double quotes.
-    * ``description: |\\n<indented block>`` — multi-line literal block.
-
-    Other keys (``version``, ``metadata``, ``requires``, …) are
-    ignored. Surrounding double quotes around single-line values are
-    stripped. This intentionally does NOT pull in PyYAML — the schema
-    is small enough to handle inline and the dependency cost isn't
-    worth it for 9 files.
+    Delegates to :func:`stock_analysis_agent.tools._frontmatter.
+    parse_yaml_frontmatter`, keeping only the ``name`` and ``description``
+    keys — other keys are dropped. Missing keys default to empty strings
+    so callers can rely on the schema.
 
     Args:
         text: Full SKILL.md text starting with the ``---`` fence.
 
     Returns:
-        Dict with ``name`` and ``description`` keys. Missing keys
-        default to empty strings so callers can rely on the schema.
+        Dict with ``name`` and ``description`` keys.
     """
     from stock_analysis_agent.tools._frontmatter import parse_yaml_frontmatter
 

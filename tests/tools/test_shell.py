@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from stock_analysis_agent.tools.shell import (
-    MAX_OUTPUT_BYTES,
+    MAX_OUTPUT_CHARS,
     _run_subprocess,
     run_command,
 )
@@ -79,16 +79,16 @@ def test_run_subprocess_timeout_returns_timeout_marker() -> None:
 
 
 def test_run_subprocess_truncates_large_output() -> None:
-    """Stdout > ``MAX_OUTPUT_BYTES`` is truncated with a marker so the
-    LLM context is bounded. The truncation removes bytes from the END of
-    the stream, not the beginning — so the LLM still sees the start of
+    """Stdout > ``MAX_OUTPUT_CHARS`` is truncated with a marker so the
+    LLM context is bounded. The truncation removes characters from the END
+    of the stream, not the beginning — so the LLM still sees the start of
     whatever was produced.
     """
     # Distinct head/tail chars so we can check the tail is gone:
-    # ``big[:MAX_OUTPUT_BYTES]`` is all ``x``, ``big[MAX_OUTPUT_BYTES:]``
+    # ``big[:MAX_OUTPUT_CHARS]`` is all ``x``, ``big[MAX_OUTPUT_CHARS:]``
     # is all ``y``. If the tail chars (``y``) survive in the truncated
     # stdout block, truncation did NOT take effect.
-    head = "x" * MAX_OUTPUT_BYTES
+    head = "x" * MAX_OUTPUT_CHARS
     tail = "y" * 500
     big = head + tail
     result = _run_subprocess(
@@ -101,10 +101,9 @@ def test_run_subprocess_truncates_large_output() -> None:
     # We isolate the stdout body — between the "--- stdout ---" header
     # and the "--- stderr ---" header — so the ``$ <cmd>`` echo line at
     # the top (which still contains the full literal command, including
-    # the un-truncated arg) does not fool the assertion. The marker text
-    # contains the word ``bytes`` which has a single ``y``, so we check
-    # for 100 consecutive ``y`` chars (a substring that can only exist
-    # if the tail survived truncation).
+    # the un-truncated arg) does not fool the assertion. We check for 100
+    # consecutive ``y`` chars (a substring that can only exist if the tail
+    # survived truncation).
     stdout_start = result.index("--- stdout ---") + len("--- stdout ---\n")
     stdout_end = result.index("\n--- stderr ---")
     truncated_stdout = result[stdout_start:stdout_end]

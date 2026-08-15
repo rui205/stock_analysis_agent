@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 
 from stock_analysis_agent.agent.exceptions import ToolExecutionError
 from stock_analysis_agent.agent.stock_analysis import StockAnalysisAgent
+from stock_analysis_agent.agent.stream import collect_final_text
 
 # Resolved at import time — points at conf/strategies/. Tests may
 # monkeypatch this to a tmp dir.
@@ -140,23 +141,6 @@ def load_strategy(name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _extract_final_text(events) -> str:
-    """Accumulate ``on_chat_model_stream`` text into one string."""
-    last_text = ""
-    for event in events:
-        if event.get("event") != "on_chat_model_stream":
-            continue
-        chunk = event.get("data", {}).get("chunk", {})
-        content = getattr(chunk, "content", "")
-        if isinstance(content, str) and content:
-            last_text += content
-        elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    last_text += block.get("text", "")
-    return last_text
-
-
 def _run_subagent_and_collect(symbol: str) -> str:
     """Inner helper — builds the subagent, runs it, returns the final text.
 
@@ -176,7 +160,6 @@ def _run_subagent_and_collect(symbol: str) -> str:
     shell_enabled = _subagent_include_shell_tool
     system_prompt = _load_system_prompt(include_shell_tool=shell_enabled)
     sub = StockAnalysisAgent(
-        symbol=symbol,
         system_prompt=system_prompt,
         include_shell_tool=shell_enabled,
         # Shell-enabled runs execute the full mx-* workflow: each data
@@ -188,7 +171,7 @@ def _run_subagent_and_collect(symbol: str) -> str:
         recursion_limit=100,
     )
     events = sub.stream([HumanMessage(f"按 system prompt 的 schema 给出 {symbol} 的分析报告。")])
-    return _extract_final_text(events)
+    return collect_final_text(events)
 
 
 class RunAnalyzeStockInput(BaseModel):

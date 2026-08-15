@@ -48,7 +48,6 @@ class StockAnalysisAgent(BaseAgent):
     def __init__(
         self,
         *,
-        symbol: str,
         system_prompt: str,
         include_shell_tool: bool = False,
         max_retries: int = 3,
@@ -58,8 +57,6 @@ class StockAnalysisAgent(BaseAgent):
         """Initialize the agent.
 
         Args:
-            symbol: Stock symbol this run analyzes (e.g. ``600519.SH``).
-                Recorded for callers/logging; not interpreted here.
             system_prompt: Caller-owned system prompt defining the
                 output contract. Must be non-empty.
             include_shell_tool: When ``True``, also expose
@@ -71,14 +68,11 @@ class StockAnalysisAgent(BaseAgent):
                 ``temperature``, ``name``, ...).
 
         Raises:
-            ValueError: If ``symbol`` or ``system_prompt`` is empty.
+            ValueError: If ``system_prompt`` is empty.
         """
-        if not symbol:
-            raise ValueError("symbol cannot be empty")
         if not system_prompt:
             raise ValueError("system_prompt cannot be empty")
 
-        self._symbol = symbol
         self._include_shell_tool = include_shell_tool
 
         tools = [load_skill, read_file]
@@ -92,11 +86,6 @@ class StockAnalysisAgent(BaseAgent):
             tools=tools,
             **kwargs,
         )
-
-    @property
-    def symbol(self) -> str:
-        """The stock symbol this agent run analyzes."""
-        return self._symbol
 
     @property
     def include_shell_tool(self) -> bool:

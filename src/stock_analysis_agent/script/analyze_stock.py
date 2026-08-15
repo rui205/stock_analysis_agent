@@ -26,9 +26,10 @@ from langchain_core.messages import BaseMessage, HumanMessage
 
 from stock_analysis_agent.agent.exceptions import ToolExecutionError
 from stock_analysis_agent.agent.stock_analysis import StockAnalysisAgent
-from stock_analysis_agent.tools.registry import (
-    format_tool_index_markdown,
-    get_tool_index,
+from stock_analysis_agent.agent.stream import chunk_text
+from stock_analysis_agent.tools.prompt import (
+    render_system_prompt,
+    resolve_tool_names,
 )
 from stock_analysis_agent.tools.skill import (
     format_skill_index_markdown,
@@ -50,22 +51,6 @@ EXIT_TOOL = 3
 _SUBAGENT_TOOL_NAMES: list[str] = ["load_skill", "read_file"]
 
 
-def _extra_subagent_tool_names(include_shell_tool: bool) -> list[str]:
-    """Return additional tool names when ``include_shell_tool`` is True.
-
-    Args:
-        include_shell_tool: Mirrors the same-named
-            :class:`StockAnalysisAgent` constructor flag.
-
-    Returns:
-        ``["run_command"]`` when ``include_shell_tool`` is ``True``;
-        an empty list otherwise. The script injects the shell tool
-        into both the agent tool list and the prompt catalog via
-        :func:`run` so the two surfaces stay aligned.
-    """
-    return ["run_command"] if include_shell_tool else []
-
-
 def _subagent_tool_names(include_shell_tool: bool = False) -> list[str]:
     """Compute the full sub-agent tool-name list for prompt rendering.
 
@@ -77,9 +62,7 @@ def _subagent_tool_names(include_shell_tool: bool = False) -> list[str]:
         Sorted, deduplicated list of tool names matching what
         :class:`StockAnalysisAgent` actually wires up for this run.
     """
-    names = list(_SUBAGENT_TOOL_NAMES)
-    names.extend(_extra_subagent_tool_names(include_shell_tool))
-    return sorted(set(names))
+    return resolve_tool_names(_SUBAGENT_TOOL_NAMES, include_shell_tool)
 
 
 # ---------------------------------------------------------------------------
@@ -128,15 +111,11 @@ def _load_system_prompt(include_shell_tool: bool = False) -> str:
         FileNotFoundError: if the bundled ``system_prompt.md`` is missing
             (e.g. the wheel was mis-built and excluded it).
     """
-    template = _PROMPT_FILE.read_text(encoding="utf-8")
-    skill_doc = format_skill_index_markdown(get_skill_index())
-    tool_doc = format_tool_index_markdown(
-        get_tool_index(names=_subagent_tool_names(include_shell_tool))
-    )
-    return (
-        template
-        .replace("<!-- SKILL_INDEX -->", skill_doc)
-        .replace("<!-- TOOL_INDEX -->", tool_doc)
+    return render_system_prompt(
+        _PROMPT_FILE,
+        tool_names=_subagent_tool_names(include_shell_tool),
+        catalog_placeholder="<!-- SKILL_INDEX -->",
+        catalog_doc=format_skill_index_markdown(get_skill_index()),
     )
 
 
@@ -199,7 +178,6 @@ def run(args: argparse.Namespace) -> int:
     # the output contract.
     system_prompt = _load_system_prompt(include_shell_tool=args.include_shell_tool)
     agent = StockAnalysisAgent(
-        symbol=args.symbol,
         include_shell_tool=args.include_shell_tool,
         recursion_limit=args.recursion_limit,
         system_prompt=system_prompt,
@@ -229,13 +207,7 @@ def run(args: argparse.Namespace) -> int:
             if kind == "on_chat_model_stream":
                 # Stream chunks: data["chunk"].content may be a string or list.
                 chunk = event.get("data", {}).get("chunk", {})
-                content = getattr(chunk, "content", "")
-                if isinstance(content, str) and content:
-                    last_text += content
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            last_text += block.get("text", "")
+                last_text += chunk_text(getattr(chunk, "content", ""))
             elif kind == "on_chat_model_end" and args.verbose:
                 output = event.get("data", {}).get("output", {})
                 for tc in getattr(output, "tool_calls", None) or []:

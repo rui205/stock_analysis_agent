@@ -26,18 +26,18 @@ logger = logging.getLogger(__name__)
 
 #: Hard cap on stdout/stderr size returned to the LLM. Larger output is
 #: truncated with a marker so the LLM context window is not consumed.
-MAX_OUTPUT_BYTES = 30_000
+MAX_OUTPUT_CHARS = 30_000
 
 #: Default timeout (seconds) for a subprocess invocation.
 DEFAULT_TIMEOUT_SECONDS = 60
 
 
 def _truncate(stream_name: str, text: str) -> str:
-    """Truncate ``text`` to ``MAX_OUTPUT_BYTES`` if it exceeds the cap."""
-    if len(text) <= MAX_OUTPUT_BYTES:
+    """Truncate ``text`` to ``MAX_OUTPUT_CHARS`` if it exceeds the cap."""
+    if len(text) <= MAX_OUTPUT_CHARS:
         return text
-    head = text[:MAX_OUTPUT_BYTES]
-    return f"{head}\n... [truncated, {stream_name} > {MAX_OUTPUT_BYTES} bytes]"
+    head = text[:MAX_OUTPUT_CHARS]
+    return f"{head}\n... [truncated, {stream_name} > {MAX_OUTPUT_CHARS} characters]"
 
 
 def _format_result(
@@ -308,6 +308,6 @@ __all__ = [
     "RunCommandInput",
     "run_command",
     "_run_subprocess",
-    "MAX_OUTPUT_BYTES",
+    "MAX_OUTPUT_CHARS",
     "DEFAULT_TIMEOUT_SECONDS",
 ]

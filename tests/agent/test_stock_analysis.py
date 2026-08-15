@@ -29,7 +29,7 @@ def _agent(**overrides) -> StockAnalysisAgent:
     Returns an agent instance for tests that don't care about the prompt
     contents. Tests that *do* care should pass ``system_prompt=`` directly.
     """
-    return StockAnalysisAgent(symbol="02319.HK", system_prompt=_TEST_PROMPT, **overrides)
+    return StockAnalysisAgent(system_prompt=_TEST_PROMPT, **overrides)
 
 
 # ---------------------------------------------------------------------------
@@ -101,28 +101,20 @@ def test_include_shell_tool_property() -> None:
 
 def test_system_prompt_is_plumbed_through_verbatim() -> None:
     """The agent must pass ``system_prompt`` to the LLM as-is, with no mutation."""
-    agent = StockAnalysisAgent(
-        symbol="02319.HK", system_prompt="hello world {symbol}",
-    )
+    agent = StockAnalysisAgent(system_prompt="hello world {symbol}")
     assert agent.system_prompt_value == "hello world {symbol}"
 
 
 def test_system_prompt_is_required() -> None:
     """``system_prompt`` has no default — the caller must own the schema."""
     with pytest.raises(TypeError):
-        StockAnalysisAgent(symbol="02319.HK")  # type: ignore[call-arg]
+        StockAnalysisAgent()  # type: ignore[call-arg]
 
 
 def test_empty_system_prompt_is_rejected() -> None:
     """An empty string would silently send a blank instruction to the LLM."""
     with pytest.raises(ValueError, match="system_prompt"):
-        StockAnalysisAgent(symbol="02319.HK", system_prompt="")
-
-
-def test_empty_symbol_is_rejected() -> None:
-    """Symbol is the primary key — empty must fail loudly."""
-    with pytest.raises(ValueError, match="symbol"):
-        StockAnalysisAgent(symbol="", system_prompt=_TEST_PROMPT)
+        StockAnalysisAgent(system_prompt="")
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +131,6 @@ def test_default_recursion_limit_is_fifty() -> None:
 def test_custom_recursion_limit_is_stored() -> None:
     """Caller may override the default; the value is exposed verbatim."""
     agent = StockAnalysisAgent(
-        symbol="02319.HK",
         system_prompt=_TEST_PROMPT,
         recursion_limit=12,
     )

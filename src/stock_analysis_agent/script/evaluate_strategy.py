@@ -31,8 +31,13 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from stock_analysis_agent.agent.exceptions import ToolExecutionError
 from stock_analysis_agent.agent.strategy_match import StrategyMatchAgent
 from stock_analysis_agent.agent.strategy_match_schema import StrategyMatchReport
-from stock_analysis_agent.tools.registry import format_tool_index_markdown, get_tool_index
-from stock_analysis_agent.tools.strategy import _list_strategy_names, _parse_strategy_frontmatter
+from stock_analysis_agent.agent.stream import collect_final_text
+from stock_analysis_agent.tools.prompt import render_system_prompt, resolve_tool_names
+from stock_analysis_agent.tools.strategy import (
+    _STRATEGIES_DIR,
+    _list_strategy_names,
+    _parse_strategy_frontmatter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,21 +68,6 @@ _ORCHESTRATOR_TOOL_NAMES: list[str] = [
 ]
 
 
-def _extra_orchestrator_tool_names(include_shell_tool: bool) -> list[str]:
-    """Return additional orchestrator tool names when shell is enabled.
-
-    Args:
-        include_shell_tool: Mirrors the same-named
-            :class:`StrategyMatchAgent` constructor flag.
-
-    Returns:
-        ``["run_command"]`` when ``include_shell_tool`` is ``True``;
-        an empty list otherwise. Kept in sync with the agent tool list
-        so the prompt catalog never claims a tool that isn't wired up.
-    """
-    return ["run_command"] if include_shell_tool else []
-
-
 def _orchestrator_tool_names(include_shell_tool: bool = False) -> list[str]:
     """Compute the orchestrator's full tool-name list for prompt rendering.
 
@@ -89,9 +79,7 @@ def _orchestrator_tool_names(include_shell_tool: bool = False) -> list[str]:
         Sorted, deduplicated list of tool names matching what
         :class:`StrategyMatchAgent` actually wires up for this run.
     """
-    names = list(_ORCHESTRATOR_TOOL_NAMES)
-    names.extend(_extra_orchestrator_tool_names(include_shell_tool))
-    return sorted(set(names))
+    return resolve_tool_names(_ORCHESTRATOR_TOOL_NAMES, include_shell_tool)
 
 
 def _project_root() -> Path:
@@ -121,9 +109,8 @@ def _format_strategy_index() -> str:
     if not names:
         return "_(no strategies available)_\n"
     lines: list[str] = []
-    strategies_dir = Path(__file__).resolve().parents[1] / "conf" / "strategies"
     for name in names:
-        path = strategies_dir / f"{name}.md"
+        path = _STRATEGIES_DIR / f"{name}.md"
         try:
             fm = _parse_strategy_frontmatter(path.read_text(encoding="utf-8"))
         except OSError:
@@ -152,15 +139,11 @@ def _load_system_prompt(include_shell_tool: bool = False) -> str:
         FileNotFoundError: if the bundled ``strategy_match_system_prompt.md``
             is missing.
     """
-    template = _PROMPT_FILE.read_text(encoding="utf-8")
-    strategy_doc = _format_strategy_index()
-    tool_doc = format_tool_index_markdown(
-        get_tool_index(names=_orchestrator_tool_names(include_shell_tool))
-    )
-    return (
-        template
-        .replace("<!-- STRATEGY_INDEX -->", strategy_doc)
-        .replace("<!-- TOOL_INDEX -->", tool_doc)
+    return render_system_prompt(
+        _PROMPT_FILE,
+        tool_names=_orchestrator_tool_names(include_shell_tool),
+        catalog_placeholder="<!-- STRATEGY_INDEX -->",
+        catalog_doc=_format_strategy_index(),
     )
 
 
@@ -309,11 +292,13 @@ def _publish_to_feishu(markdown: str) -> str | None:
         except OSError as e:
             logger.warning("lark-cli invocation failed: %s", e)
             return None
-        break
-    if proc.returncode != 0:
-        logger.warning("lark-cli returned %d: %s", proc.returncode, proc.stderr.strip()[:500])
-        return None
-    return _extract_feishu_doc_url(proc.stdout)
+        if proc.returncode != 0:
+            logger.warning(
+                "lark-cli returned %d: %s", proc.returncode, proc.stderr.strip()[:500]
+            )
+            return None
+        return _extract_feishu_doc_url(proc.stdout)
+    return None  # unreachable — every iteration returns or retries
 
 
 def _validate_strategy(name: str) -> None:
@@ -377,18 +362,8 @@ def run(args: argparse.Namespace) -> int:
     messages: list[BaseMessage] = [HumanMessage(
         content=f"按 system prompt 的 schema 给出 {args.symbol} 在 {args.strategy} 策略下的匹配报告。"
     )]
-    last_text = ""
     try:
-        for event in agent.stream(messages):
-            if event.get("event") == "on_chat_model_stream":
-                chunk = event.get("data", {}).get("chunk", {})
-                content = getattr(chunk, "content", "")
-                if isinstance(content, str) and content:
-                    last_text += content
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            last_text += block.get("text", "")
+        last_text = collect_final_text(agent.stream(messages))
     except ToolExecutionError as e:
         # The middleware wraps the original exception via ``raise ... from
         # exc``; surface its type so failures with empty/ambiguous messages
