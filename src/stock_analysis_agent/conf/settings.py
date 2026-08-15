@@ -2,7 +2,7 @@
 
 Reads configuration from environment variables so the project never
 hardcodes secrets (model API keys, etc.). The configured model is
-``MiniMax-M3`` (routed via an Anthropic-protocol gateway) and the API
+``deepseek-v4-pro`` (routed via an Anthropic-protocol gateway) and the API
 key is sourced from ``ANTHROPIC_API_KEY``.
 
 The module exposes:
@@ -34,9 +34,9 @@ API_KEY_ENV_VAR: str = "ANTHROPIC_API_KEY"
 # subprocess (one that didn't inherit this var) is obvious.
 BASE_URL_ENV_VAR: str = "ANTHROPIC_BASE_URL"
 
-# Default model identifier. ``MiniMax-M3`` is the model id routed via the
-# Anthropic-protocol gateway (see :data:`DEFAULT_MODEL_PROVIDER`).
-DEFAULT_MODEL: str = "qwen3.8-max"
+# Default model identifier, routed via the Anthropic-protocol gateway
+# (see :data:`DEFAULT_MODEL_PROVIDER`).
+DEFAULT_MODEL: str = "deepseek-v4-pro"
 
 # The Anthropic SDK is used to call MiniMax because MiniMax exposes an
 # Anthropic-compatible endpoint (``$ANTHROPIC_BASE_URL``). LangChain's
