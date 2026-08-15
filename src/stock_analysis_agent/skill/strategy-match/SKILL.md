@@ -49,6 +49,18 @@ agent 自己从报告里捞需要的章节(verdict / score / 主要风险等)喂
 - `[ERROR] analyze_stock tool failed: ...` → agent 自决:可基于已有信息给 "avoid" +
   confidence="low",或直接中止并在报告中说明数据缺失
 
+### Step 2.5 数据不足 → deepresearch 补充(≤3 次)
+
+当 `run_analyze_stock` 返回 `[ERROR]`、或报告中某条策略原则所需字段缺失/无法验证时,
+**不要直接给 fit / mismatch**:
+
+1. 挑出「证据不足」的策略原则,提炼为具体维度(如 `["盈利质量-ROE"]`)。
+2. 调 `run_deepresearch(symbol=..., dimensions=[...])`,等返回 Markdown 报告。
+3. 把深研结论回填到对应 criterion 的 evidence / reasoning。
+4. **最多 3 次**;仍不足则基于现有信息给结论,`confidence=low`,并在
+   `judgment_rationale` 标注缺失维度。
+5. 绝不编造深研数据。
+
 ### Step 3. 逐条匹配
 
 针对策略中**所有可独立验证**的原则(忽略纯定性描述如"长期持有"),逐条生成一条
@@ -71,7 +83,9 @@ agent 自己从报告里捞需要的章节(verdict / score / 主要风险等)喂
 
 ### Step 5. 输出
 
-**严格按 StrategyMatchReport schema 输出 JSON**,不附加解释。LLM 输出后由
+**严格按 StrategyMatchReport schema 输出 JSON**,不附加解释。schema 现含
+`data_sources`(stock_analysis / deepresearch 两个来源摘要)与
+`judgment_rationale`(判断理论)两个新字段。LLM 输出后由
 `script.evaluate_strategy.run` 校验 + 渲染。
 
 ## Output delivery (--delivery 决定)
@@ -99,8 +113,15 @@ agent 自己从报告里捞需要的章节(verdict / score / 主要风险等)喂
 {for each criterion_match:}
 | {i} | {criterion} | {match_level} | {evidence} | {reasoning} |
 
-## 基本面摘要(来自 subagent)
-{raw_analysis_excerpt}
+## 数据来源
+### 来自 stock_analysis
+{data_sources.stock_analysis}
+
+### 来自 deepresearch
+{data_sources.deepresearch}(未调用则写"未调用 deepresearch")
+
+## 判断理论
+{judgment_rationale}
 
 ## 行动建议
 {action_recommendation}
@@ -109,15 +130,17 @@ agent 自己从报告里捞需要的章节(verdict / score / 主要风险等)喂
 *本报告由 AI 生成,不构成投资建议*
 ```
 
-### 飞书 XML 模板(7 节)
+### 飞书 XML 模板(9 节)
 
 1. **执行摘要** — `<callout type="info">` + 表格:overall_fit + fit_score + confidence + summary
 2. **策略信息** — strategy_name + strategy_version + 适用市场
 3. **逐条匹配** — 表格:原则 / 评级 / 证据 / 推理
-4. **基本面摘要** — verdict + score + 主要风险(从 raw_analysis_excerpt)
-5. **行动建议** — action_recommendation 段落
-6. **数据声明** — 数据源列表 + 免责声明
-7. (可选)**完整报告链接** — 如果 subagent 已发布飞书,这里附链接
+4. **数据来源 · stock_analysis** — 来自 `data_sources.stock_analysis`
+5. **数据来源 · deepresearch** — 来自 `data_sources.deepresearch`(未调用标注"未调用")
+6. **判断理论** — `judgment_rationale` 段落
+7. **行动建议** — action_recommendation 段落
+8. **数据声明** — 数据源列表 + 免责声明
+9. (可选)**完整报告链接** — 如果 subagent 已发布飞书,这里附链接
 
 lark-cli 命令细节、`lark-cli docs +create` / `+update` 选择、`<callout>` /
 `<h1>` 等 XML 标签规范,均在 `lark-doc` skill 里 — **先** `load_skill("lark-doc")`。
@@ -146,3 +169,6 @@ lark-cli 命令细节、`lark-cli docs +create` / `+update` 选择、`<callout>`
 - **`fit_score` 超 0-10 范围** → schema 校验会失败,务必保证
 - **`overall_fit` 选错** → 严格按 §4 触发条件,不要因为 "分数高" 就直接 buy
 - **策略中只有定性描述** → 仍要逐条给出 criterion_match,evidence 写 "定性原则,无量化判据"
+- **数据不足却强行给 fit/mismatch** → 先按 Step 2.5 调 `run_deepresearch` 补充,别硬凑
+- **deepresearch 调用超过 3 次** → 上限 3 次,超了就用已有信息给 `confidence=low`
+- **编造深研数据** → deepresearch 结果必须来自 `run_deepresearch` 返回的报告,不得臆造
