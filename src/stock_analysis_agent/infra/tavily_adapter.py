@@ -2,12 +2,13 @@
 
 Thin wrapper around ``tavily.TavilyClient`` so the rest of the package
 talks to the search backend through one small, testable object instead of
-importing the SDK directly. The API key is a hardcoded placeholder in
-:data:`TAVILY_API_KEY`; replace it with the real key before use.
+importing the SDK directly. The API key is read from the environment variable
+:data:`TAVILY_API_KEY_ENV_VAR` at adapter construction time.
 """
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 import httpx
@@ -24,9 +25,8 @@ from tavily.errors import (
 
 logger = logging.getLogger(__name__)
 
-# Hardcoded placeholder key — replace this string with the real Tavily API
-# key. Deliberately not read from the environment, per project request.
-TAVILY_API_KEY: str = "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"
+#: Env-var name for the Tavily API key (mirrors conf.settings.API_KEY_ENV_VAR).
+TAVILY_API_KEY_ENV_VAR: str = "TAVILY_API_KEY"
 
 # API-level failures raised by the Tavily SDK. ``httpx.HTTPError`` is caught
 # separately below for transport-level failures (DNS, reset, TLS, timeouts).
@@ -48,6 +48,10 @@ class TavilySearchError(RuntimeError):
     """
 
 
+class TavilyAPIKeyError(RuntimeError):
+    """Raised when the Tavily API key env var is not set."""
+
+
 class TavilyAdapter:
     """Adapter over the Tavily web-search SDK.
 
@@ -58,8 +62,14 @@ class TavilyAdapter:
         client: The underlying synchronous :class:`TavilyClient`.
     """
 
-    def __init__(self, api_key: str = TAVILY_API_KEY) -> None:
-        self.client = TavilyClient(api_key=api_key)
+    def __init__(self, api_key: str | None = None) -> None:
+        resolved = api_key if api_key else os.environ.get(TAVILY_API_KEY_ENV_VAR, "")
+        if not resolved.strip():
+            raise TavilyAPIKeyError(
+                f"environment variable {TAVILY_API_KEY_ENV_VAR!r} is not set; "
+                "export it before using web_search"
+            )
+        self.client = TavilyClient(api_key=resolved)
 
     def search(
         self,

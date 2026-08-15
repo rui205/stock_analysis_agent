@@ -6,9 +6,14 @@ third-party clients.
 """
 from __future__ import annotations
 
-from stock_analysis_agent.infra.tavily_adapter import TavilyAdapter, TavilySearchError
+from stock_analysis_agent.infra.tavily_adapter import (
+    TavilyAdapter,
+    TavilyAPIKeyError,
+    TavilySearchError,
+)
 
 __all__ = [
     "TavilyAdapter",
+    "TavilyAPIKeyError",
     "TavilySearchError",
 ]
