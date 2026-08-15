@@ -47,6 +47,10 @@ DeliveryMode = Literal["local", "feishu", "both"]
 _OUTPUT_DIR_NAME = "output"
 
 
+class UnknownStrategyError(ValueError):
+    """Raised when ``--strategy`` names a strategy with no ``.md`` file."""
+
+
 #: Tool names exposed to ``StrategyMatchAgent`` (the orchestrator) —
 #: injected into ``<!-- TOOL_INDEX -->`` so the system prompt matches
 #: the wired tools 1:1. The sub-agent's data-discovery surface
@@ -201,10 +205,16 @@ def build_output_path(symbol: str, output_dir_path: Path, now_epoch: int | None 
     return output_dir_path / f"strategy-match-{safe_symbol}-{ts}.md"
 
 
+def _md_cell(text: str) -> str:
+    """Escape ``|`` and newlines so ``text`` stays one markdown table cell."""
+    return text.replace("|", "\\|").replace("\n", " ")
+
+
 def render_local_markdown(report: StrategyMatchReport, now_iso: str) -> str:
     """Render a :class:`StrategyMatchReport` as a 7-section Markdown file."""
     rows = "\n".join(
-        f"| {i} | {m.criterion} | {m.match_level} | {m.evidence} | {m.reasoning} |"
+        f"| {i} | {_md_cell(m.criterion)} | {_md_cell(m.match_level)} | "
+        f"{_md_cell(m.evidence)} | {_md_cell(m.reasoning)} |"
         for i, m in enumerate(report.criterion_matches, 1)
     )
     return (
@@ -255,38 +265,51 @@ def _extract_feishu_doc_url(stdout: str) -> str | None:
     return match.group(0) if match else None
 
 
-def _publish_to_feishu(report: StrategyMatchReport) -> str | None:
-    """Best-effort publish the rendered Markdown to a Feishu cloud doc.
+#: Backoff (seconds) for a transient ``lark-cli`` publish failure, matching
+#: the "network/rate-limit → retry twice (1s / 3s)" policy in
+#: ``skill/strategy-match/SKILL.md``. The initial attempt is free; each entry
+#: here is one retry.
+_FEISHU_RETRY_DELAYS: tuple[float, ...] = (1.0, 3.0)
+
+
+def _publish_to_feishu(markdown: str) -> str | None:
+    """Best-effort publish ``markdown`` to a Feishu cloud doc.
 
     Wraps a ``lark-cli docs +create`` shell call. Returns the new
     document URL on success, or ``None`` if ``lark-cli`` is missing /
-    not authenticated / fails — the caller is expected to log a
-    warning and fall back to the local markdown.
+    not authenticated / fails after retries — the caller falls back to
+    local markdown.
 
-    The rendered Markdown starts with a single H1, which lark-cli (with
+    The markdown starts with a single H1, which lark-cli (with
     ``--doc-format markdown``) extracts as the document title, so no
-    separate ``--title`` flag is passed.
+    separate ``--title`` flag is passed. Transient timeouts are retried
+    with a short backoff; auth/usage errors fail fast.
     """
     if shutil.which("lark-cli") is None:
         logger.warning("lark-cli not on PATH; skipping Feishu publish")
         return None
 
-    content = render_local_markdown(report, datetime.now(tz=timezone.utc).strftime("%Y-%m-%d"))
-    try:
-        proc = subprocess.run(
-            [
-                "lark-cli", "docs", "+create",
-                "--api-version", "v2",
-                "--doc-format", "markdown",
-                "--content", content,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except (subprocess.TimeoutExpired, OSError) as e:
-        logger.warning("lark-cli invocation failed: %s", e)
-        return None
+    cmd = [
+        "lark-cli", "docs", "+create",
+        "--api-version", "v2",
+        "--doc-format", "markdown",
+        "--content", markdown,
+    ]
+    for attempt in range(len(_FEISHU_RETRY_DELAYS) + 1):
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired as e:
+            if attempt == len(_FEISHU_RETRY_DELAYS):
+                logger.warning(
+                    "lark-cli timed out after %d attempts: %s", attempt + 1, e
+                )
+                return None
+            time.sleep(_FEISHU_RETRY_DELAYS[attempt])
+            continue
+        except OSError as e:
+            logger.warning("lark-cli invocation failed: %s", e)
+            return None
+        break
     if proc.returncode != 0:
         logger.warning("lark-cli returned %d: %s", proc.returncode, proc.stderr.strip()[:500])
         return None
@@ -295,10 +318,10 @@ def _publish_to_feishu(report: StrategyMatchReport) -> str | None:
 
 def _validate_strategy(name: str) -> None:
     """Refuse to start if ``name`` is not a known strategy."""
-    if name not in _list_strategy_names():
-        available = ", ".join(_list_strategy_names()) or "(none)"
-        raise SystemExit(
-            f"unknown strategy {name!r}; available: {available}"
+    available = _list_strategy_names()
+    if name not in available:
+        raise UnknownStrategyError(
+            f"unknown strategy {name!r}; available: {', '.join(available) or '(none)'}"
         )
 
 
@@ -378,29 +401,33 @@ def run(args: argparse.Namespace) -> int:
     try:
         json_str = _extract_json_object(_strip_code_fence(last_text))
         report = StrategyMatchReport.model_validate_json(json_str)
-    except (ValueError, Exception) as e:  # noqa: BLE001
+    except ValueError as e:
         logger.error("agent output failed StrategyMatchReport validation: %s", e)
         logger.debug("raw output: %s", last_text[:2000])
         return EXIT_PARSE
 
     out_dir = args.output_dir or output_dir()
+    now_iso = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    markdown = render_local_markdown(report, now_iso)
+    path = build_output_path(args.symbol, out_dir)
+
     if args.delivery in ("local", "both"):
         out_dir.mkdir(parents=True, exist_ok=True)
-        now_iso = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
-        path = build_output_path(args.symbol, out_dir)
-        path.write_text(render_local_markdown(report, now_iso), encoding="utf-8")
+        path.write_text(markdown, encoding="utf-8")
         logger.info("wrote %s", path)
 
     if args.delivery in ("feishu", "both"):
-        url = _publish_to_feishu(report)
+        url = _publish_to_feishu(markdown)
         if url:
             logger.info("published to Feishu: %s", url)
+        elif args.delivery == "feishu":
+            # feishu-only: degrade to local markdown (per SKILL.md) rather
+            # than leaving the user with no artifact at all.
+            out_dir.mkdir(parents=True, exist_ok=True)
+            path.write_text(markdown, encoding="utf-8")
+            logger.warning("Feishu publish failed; wrote local markdown to %s", path)
         else:
-            logger.warning(
-                "Feishu publish failed; falling back to local markdown only. "
-                "See output/%s for the rendered report.",
-                build_output_path(args.symbol, out_dir).name,
-            )
+            logger.warning("Feishu publish failed; local markdown already written to %s", path)
 
     logger.info("summary: %s", report.summary)
     return EXIT_OK
@@ -415,10 +442,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         return run(args)
-    except SystemExit as e:
-        msg = str(e)
-        if msg:
-            logger.error(msg)
+    except UnknownStrategyError as e:
+        logger.error("%s", e)
         return EXIT_BAD_STRATEGY
     except Exception as e:  # noqa: BLE001
         logger.exception("unhandled exception: %s", e)

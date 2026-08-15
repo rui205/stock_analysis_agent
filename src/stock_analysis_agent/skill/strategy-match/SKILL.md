@@ -65,7 +65,7 @@ agent 自己从报告里捞需要的章节(verdict / score / 主要风险等)喂
   - `buy` — 大部分原则 fit,且无 mismatch,基本面 buy/强烈买入
   - `hold` — 多数 partial,基本面 hold,或基本面 buy 但策略部分 mismatch
   - `avoid` — 任何硬阈值 mismatch,或基本面 sell + 策略多项 mismatch
-- `fit_score` (0-10):参考 criterion_matches 中 fit 的占比 × 基本面 weighted_total
+- `fit_score` (0-10):参考 criterion_matches 中 fit 的占比,结合 subagent 报告的 verdict/score 综合打分
 - `summary` — 一句话,30-80 字
 - `action_recommendation` — 具体仓位/等待/放弃,30-200 字
 

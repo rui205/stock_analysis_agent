@@ -94,6 +94,12 @@ class TestRenderLocalMarkdown:
         assert "build 5% position" in md
         assert "不构成投资建议" in md
 
+    def test_escapes_pipe_and_newline_in_table_cells(self) -> None:
+        report = _valid_report()
+        report.criterion_matches[0].criterion = "PE < 15 | ROE > 15\nsecond line"
+        md = render_local_markdown(report, "2026-07-12")
+        assert "PE < 15 \\| ROE > 15 second line" in md
+
 
 class TestFormatStrategyIndex:
     def test_renders_one_bullet_per_strategy(
@@ -181,9 +187,9 @@ class TestBuildParser:
 
 
 class TestValidateStrategy:
-    def test_unknown_strategy_system_exits(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unknown_strategy_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(es, "_list_strategy_names", lambda: ("alpha",))
-        with pytest.raises(SystemExit):
+        with pytest.raises(es.UnknownStrategyError):
             _validate_strategy("missing")
 
     def test_known_strategy_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -206,13 +212,15 @@ class TestRunExitCode4OnUnknownStrategy:
 
 
 class TestPublishToFeishu:
+    _MARKDOWN = "# [600519.SH] 策略匹配报告\n\nbody"
+
     def test_returns_none_when_lark_cli_missing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import shutil
 
         monkeypatch.setattr(shutil, "which", lambda name: None)
-        assert _publish_to_feishu(_valid_report()) is None
+        assert _publish_to_feishu(self._MARKDOWN) is None
 
     def test_returns_url_on_success(
         self, monkeypatch: pytest.MonkeyPatch
@@ -227,11 +235,8 @@ class TestPublishToFeishu:
             stdout = "Creating doc...\nhttps://example.feishu.cn/docx/abc123\n"
             stderr = ""
 
-        monkeypatch.setattr(
-            subprocess, "run",
-            lambda *a, **kw: _FakeProc(),
-        )
-        url = _publish_to_feishu(_valid_report())
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _FakeProc())
+        url = _publish_to_feishu(self._MARKDOWN)
         assert url == "https://example.feishu.cn/docx/abc123"
 
     def test_returns_none_on_nonzero_exit(
@@ -248,21 +253,55 @@ class TestPublishToFeishu:
             stderr = "auth failed"
 
         monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _FakeProc())
-        assert _publish_to_feishu(_valid_report()) is None
+        assert _publish_to_feishu(self._MARKDOWN) is None
 
-    def test_returns_none_on_timeout(
+    def test_returns_none_after_repeated_timeouts(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import shutil
         import subprocess
+        import time
 
         monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/lark-cli")
+        monkeypatch.setattr(time, "sleep", lambda *a: None)
+
+        calls = {"n": 0}
 
         def _raise(*a: Any, **kw: Any) -> None:
+            calls["n"] += 1
             raise subprocess.TimeoutExpired(cmd="lark-cli", timeout=60)
 
         monkeypatch.setattr(subprocess, "run", _raise)
-        assert _publish_to_feishu(_valid_report()) is None
+        assert _publish_to_feishu(self._MARKDOWN) is None
+        assert calls["n"] == 3  # 1 initial + 2 retries
+
+    def test_retries_on_timeout_then_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shutil
+        import subprocess
+        import time
+
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/lark-cli")
+        monkeypatch.setattr(time, "sleep", lambda *a: None)
+
+        class _FakeProc:
+            returncode = 0
+            stdout = "https://example.feishu.cn/docx/abc123"
+            stderr = ""
+
+        calls = {"n": 0}
+
+        def _run(*a: Any, **kw: Any) -> Any:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise subprocess.TimeoutExpired(cmd="lark-cli", timeout=60)
+            return _FakeProc()
+
+        monkeypatch.setattr(subprocess, "run", _run)
+        url = _publish_to_feishu(self._MARKDOWN)
+        assert url == "https://example.feishu.cn/docx/abc123"
+        assert calls["n"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -338,3 +377,45 @@ class TestStrategyMatchAgent:
         strategy_tools._subagent_include_shell_tool = True
         StrategyMatchAgent(system_prompt="hello")
         assert strategy_tools._subagent_include_shell_tool is False
+
+
+class TestRunFeishuOnlyDegradesToLocal:
+    def test_writes_local_markdown_when_publish_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``--delivery feishu`` + failed publish must still produce an
+        artifact — degrade to local markdown per SKILL.md, not just log."""
+        from types import SimpleNamespace
+
+        report_json = _valid_report().model_dump_json()
+        fake_events = [
+            {
+                "event": "on_chat_model_stream",
+                "data": {"chunk": SimpleNamespace(content=report_json)},
+            }
+        ]
+
+        class _FakeAgent:
+            def __init__(self, **kwargs: Any) -> None:
+                pass
+
+            def stream(self, messages: Any) -> Any:
+                return iter(fake_events)
+
+        monkeypatch.setattr(es, "_validate_strategy", lambda name: None)
+        monkeypatch.setattr(es, "_load_system_prompt", lambda **kw: "dummy")
+        monkeypatch.setattr(es, "StrategyMatchAgent", _FakeAgent)
+        monkeypatch.setattr(es, "_publish_to_feishu", lambda markdown: None)
+
+        args = SimpleNamespace(
+            symbol="600519.SH",
+            strategy="value-investing",
+            delivery="feishu",
+            include_shell_tool=False,
+            recursion_limit=80,
+            output_dir=tmp_path,
+            verbose=False,
+        )
+        assert es.run(args) == es.EXIT_OK
+        files = list(tmp_path.glob("strategy-match-*.md"))
+        assert len(files) == 1

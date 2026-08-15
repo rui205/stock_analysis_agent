@@ -26,10 +26,10 @@ class StrategyCriterionMatch(BaseModel):
         reasoning: Why the level was chosen.
     """
 
-    criterion: str = Field(min_length=1)
+    criterion: str = Field(min_length=1, max_length=200)
     match_level: Literal["fit", "partial", "mismatch"]
-    evidence: str = Field(min_length=1)
-    reasoning: str = Field(min_length=1)
+    evidence: str = Field(min_length=1, max_length=500)
+    reasoning: str = Field(min_length=1, max_length=500)
 
 
 class StrategyMatchReport(BaseModel):
@@ -47,8 +47,8 @@ class StrategyMatchReport(BaseModel):
     fit_score: float = Field(ge=0, le=10)
     summary: str = Field(min_length=1, max_length=200)
     criterion_matches: list[StrategyCriterionMatch] = Field(min_length=1)
-    raw_analysis_excerpt: str = Field(min_length=1)
-    action_recommendation: str = Field(min_length=1)
+    raw_analysis_excerpt: str = Field(min_length=1, max_length=2000)
+    action_recommendation: str = Field(min_length=1, max_length=300)
     confidence: Literal["high", "medium", "low"]
 
 

@@ -93,3 +93,30 @@ class TestStrategyMatchReport:
     def test_rejects_empty_strategy_name(self) -> None:
         with pytest.raises(ValidationError):
             _with(strategy_name="")
+
+
+class TestOverlongFields:
+    """Bounded strings must not accept runaway LLM output."""
+
+    @pytest.mark.parametrize(
+        ("field", "length"),
+        [("criterion", 201), ("evidence", 501), ("reasoning", 501)],
+    )
+    def test_criterion_match_rejects_overlong(self, field: str, length: int) -> None:
+        kwargs = {
+            "criterion": "x",
+            "match_level": "fit",
+            "evidence": "e",
+            "reasoning": "r",
+        }
+        kwargs[field] = "x" * length
+        with pytest.raises(ValidationError):
+            StrategyCriterionMatch(**kwargs)
+
+    @pytest.mark.parametrize(
+        ("field", "length"),
+        [("raw_analysis_excerpt", 2001), ("action_recommendation", 301)],
+    )
+    def test_report_rejects_overlong(self, field: str, length: int) -> None:
+        with pytest.raises(ValidationError):
+            _with(**{field: "x" * length})
