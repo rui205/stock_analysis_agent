@@ -14,11 +14,13 @@ Public API:
     run_command           — @tool wrapper for running CLI subprocesses
     load_strategy         — @tool wrapper for reading a strategy .md from conf/strategies/
     run_analyze_stock     — @tool wrapper that runs the StockAnalysisAgent subagent and returns its Markdown report verbatim
+    run_deepresearch      — @tool wrapper that runs the DeepResearchAgent subagent and returns its Markdown report verbatim
     set_subagent_include_shell_tool — propagate the orchestrator's shell opt-in to the run_analyze_stock subagent
     _list_strategy_names  — alphabetical list of strategy file stems under conf/strategies/
     _parse_strategy_frontmatter — extract simple key: value pairs from a strategy frontmatter block
     LoadStrategyInput     — input schema for load_strategy
     RunAnalyzeStockInput  — input schema for run_analyze_stock
+    RunDeepResearchInput  — input schema for run_deepresearch
 """
 from __future__ import annotations
 
@@ -55,10 +57,12 @@ from stock_analysis_agent.tools.web_search import _web_search
 _STRATEGY_LAZY_NAMES: frozenset[str] = frozenset({
     "LoadStrategyInput",
     "RunAnalyzeStockInput",
+    "RunDeepResearchInput",
     "_list_strategy_names",
     "_parse_strategy_frontmatter",
     "load_strategy",
     "run_analyze_stock",
+    "run_deepresearch",
     "set_subagent_include_shell_tool",
 })
 
@@ -82,10 +86,12 @@ __all__ = [
     "run_command",
     "LoadStrategyInput",
     "RunAnalyzeStockInput",
+    "RunDeepResearchInput",
     "_list_strategy_names",
     "_parse_strategy_frontmatter",
     "load_strategy",
     "run_analyze_stock",
+    "run_deepresearch",
     "set_subagent_include_shell_tool",
 ]
 
