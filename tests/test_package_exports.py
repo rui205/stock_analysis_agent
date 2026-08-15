@@ -10,9 +10,8 @@ def test_agent_package_exports() -> None:
 
 def test_tools_package_exports() -> None:
     from langchain_core.tools import StructuredTool
-    from stock_analysis_agent.tools import _extract_text, _web_search
+    from stock_analysis_agent.tools import _web_search
 
-    assert callable(_extract_text)
     assert isinstance(_web_search, StructuredTool)
     assert _web_search.name == "web_search"
 

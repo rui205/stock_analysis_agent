@@ -1,7 +1,6 @@
 """Tools for stock_analysis_agent.
 
 Public API:
-    _extract_text         — best-effort plain-text extraction from HTML/PDF
     _read_skill           — read a project-level SKILL.md
     _web_search           — @tool wrapper for cached web search
     format_skill_index_markdown — render the project-skill catalog as Markdown
@@ -42,7 +41,6 @@ from stock_analysis_agent.tools.skill import (
     list_skill_names,
     load_skill,
 )
-from stock_analysis_agent.tools.text_extractor import _extract_text
 from stock_analysis_agent.tools.web_search import _web_search
 
 # ``stock_analysis_agent.tools.strategy`` depends on
@@ -69,7 +67,6 @@ __all__ = [
     "ToolIndexEntry",
     "ToolOutputSpec",
     "ToolParamSpec",
-    "_extract_text",
     "_read_file",
     "_read_skill",
     "_read_skill_index_entry",
