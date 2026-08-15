@@ -5,6 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from stock_analysis_agent.agent.strategy_match_schema import (
+    DataSourceBreakdown,
     StrategyCriterionMatch,
     StrategyMatchReport,
 )
@@ -28,7 +29,11 @@ def _valid_report_kwargs() -> dict:
         "fit_score": 8.5,
         "summary": "fits well; cheap, high quality, low debt",
         "criterion_matches": [_valid_criterion()],
-        "raw_analysis_excerpt": "verdict=buy score=8.2",
+        "data_sources": DataSourceBreakdown(
+            stock_analysis="verdict=buy score=8.2",
+            deepresearch="",
+        ),
+        "judgment_rationale": "估值低于阈值且盈利质量达标,故 buy",
         "action_recommendation": "build 5% position in entry zone",
         "confidence": "high",
     }
@@ -60,6 +65,16 @@ class TestStrategyCriterionMatch:
             StrategyCriterionMatch(
                 criterion="x", match_level="maybe", evidence="e", reasoning="r"
             )
+
+
+class TestDataSourceBreakdown:
+    def test_deepresearch_defaults_to_empty(self) -> None:
+        ds = DataSourceBreakdown(stock_analysis="x")
+        assert ds.deepresearch == ""
+
+    def test_rejects_empty_stock_analysis(self) -> None:
+        with pytest.raises(ValidationError):
+            DataSourceBreakdown(stock_analysis="")
 
 
 class TestStrategyMatchReport:
@@ -94,6 +109,16 @@ class TestStrategyMatchReport:
         with pytest.raises(ValidationError):
             _with(strategy_name="")
 
+    def test_rejects_missing_data_sources(self) -> None:
+        kwargs = _valid_report_kwargs()
+        del kwargs["data_sources"]
+        with pytest.raises(ValidationError):
+            StrategyMatchReport(**kwargs)
+
+    def test_rejects_empty_judgment_rationale(self) -> None:
+        with pytest.raises(ValidationError):
+            _with(judgment_rationale="")
+
 
 class TestOverlongFields:
     """Bounded strings must not accept runaway LLM output."""
@@ -115,8 +140,20 @@ class TestOverlongFields:
 
     @pytest.mark.parametrize(
         ("field", "length"),
-        [("raw_analysis_excerpt", 2001), ("action_recommendation", 301)],
+        [("judgment_rationale", 1501), ("action_recommendation", 301)],
     )
     def test_report_rejects_overlong(self, field: str, length: int) -> None:
         with pytest.raises(ValidationError):
             _with(**{field: "x" * length})
+
+    def test_rejects_overlong_stock_analysis(self) -> None:
+        with pytest.raises(ValidationError):
+            _with(data_sources=DataSourceBreakdown(stock_analysis="x" * 2001))
+
+    def test_rejects_overlong_deepresearch(self) -> None:
+        with pytest.raises(ValidationError):
+            _with(
+                data_sources=DataSourceBreakdown(
+                    stock_analysis="x", deepresearch="x" * 2001
+                )
+            )

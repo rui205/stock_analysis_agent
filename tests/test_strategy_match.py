@@ -20,6 +20,7 @@ import pytest
 
 from stock_analysis_agent.agent.strategy_match import StrategyMatchAgent
 from stock_analysis_agent.agent.strategy_match_schema import (
+    DataSourceBreakdown,
     StrategyCriterionMatch,
     StrategyMatchReport,
 )
@@ -58,7 +59,11 @@ def _valid_report() -> StrategyMatchReport:
                 reasoning="well below threshold",
             )
         ],
-        raw_analysis_excerpt="verdict=buy score=8.0 risks=macro slowdown",
+        data_sources=DataSourceBreakdown(
+            stock_analysis="verdict=buy score=8.0 risks=macro slowdown",
+            deepresearch="",
+        ),
+        judgment_rationale="估值分位低且盈利质量达标,故 buy",
         action_recommendation="build 5% position in entry zone",
         confidence="high",
     )
@@ -93,6 +98,10 @@ class TestRenderLocalMarkdown:
         assert "fit" in md
         assert "build 5% position" in md
         assert "不构成投资建议" in md
+        assert "## 数据来源" in md
+        assert "### 来自 stock_analysis" in md
+        assert "### 来自 deepresearch" in md
+        assert "## 判断理论" in md
 
     def test_escapes_pipe_and_newline_in_table_cells(self) -> None:
         report = _valid_report()

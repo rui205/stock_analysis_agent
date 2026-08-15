@@ -194,12 +194,13 @@ def _md_cell(text: str) -> str:
 
 
 def render_local_markdown(report: StrategyMatchReport, now_iso: str) -> str:
-    """Render a :class:`StrategyMatchReport` as a 7-section Markdown file."""
+    """Render a :class:`StrategyMatchReport` as a Markdown file."""
     rows = "\n".join(
         f"| {i} | {_md_cell(m.criterion)} | {_md_cell(m.match_level)} | "
         f"{_md_cell(m.evidence)} | {_md_cell(m.reasoning)} |"
         for i, m in enumerate(report.criterion_matches, 1)
     )
+    deepresearch = report.data_sources.deepresearch or "未调用 deepresearch(基本面数据已足够)"
     return (
         f"# [{report.symbol}] 策略匹配报告 · {now_iso}\n\n"
         f"> 策略: **{report.strategy_name}** v{report.strategy_version}\n"
@@ -209,7 +210,10 @@ def render_local_markdown(report: StrategyMatchReport, now_iso: str) -> str:
         f"## 策略原则逐条匹配\n"
         f"| # | 原则 | 评级 | 证据 | 推理 |\n"
         f"|---|------|------|------|------|\n{rows}\n\n"
-        f"## 基本面摘要(来自 subagent)\n{report.raw_analysis_excerpt}\n\n"
+        f"## 数据来源\n"
+        f"### 来自 stock_analysis\n{report.data_sources.stock_analysis}\n\n"
+        f"### 来自 deepresearch\n{deepresearch}\n\n"
+        f"## 判断理论\n{report.judgment_rationale}\n\n"
         f"## 行动建议\n{report.action_recommendation}\n\n"
         f"---\n*本报告由 AI 生成,不构成投资建议*\n"
     )

@@ -32,6 +32,20 @@ class StrategyCriterionMatch(BaseModel):
     reasoning: str = Field(min_length=1, max_length=500)
 
 
+class DataSourceBreakdown(BaseModel):
+    """What each data source contributed to the report.
+
+    Attributes:
+        stock_analysis: Key info from the stock_analysis subagent
+            (verdict / score / key risks, etc.).
+        deepresearch: Supplementary info from the deepresearch subagent;
+            empty string when deepresearch was not called.
+    """
+
+    stock_analysis: str = Field(min_length=1, max_length=2000)
+    deepresearch: str = Field(default="", max_length=2000)
+
+
 class StrategyMatchReport(BaseModel):
     """Structured strategy-match output returned by ``StrategyMatchAgent``.
 
@@ -47,9 +61,10 @@ class StrategyMatchReport(BaseModel):
     fit_score: float = Field(ge=0, le=10)
     summary: str = Field(min_length=1, max_length=200)
     criterion_matches: list[StrategyCriterionMatch] = Field(min_length=1)
-    raw_analysis_excerpt: str = Field(min_length=1, max_length=2000)
+    data_sources: DataSourceBreakdown
+    judgment_rationale: str = Field(min_length=1, max_length=1500)
     action_recommendation: str = Field(min_length=1, max_length=300)
     confidence: Literal["high", "medium", "low"]
 
 
-__all__ = ["StrategyCriterionMatch", "StrategyMatchReport"]
+__all__ = ["DataSourceBreakdown", "StrategyCriterionMatch", "StrategyMatchReport"]

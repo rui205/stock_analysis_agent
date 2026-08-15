@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from stock_analysis_agent.agent.strategy_match_schema import (
+    DataSourceBreakdown,
     StrategyCriterionMatch,
     StrategyMatchReport,
 )
@@ -40,7 +41,11 @@ def _make_report() -> StrategyMatchReport:
                 reasoning="低于门槛",
             )
         ],
-        raw_analysis_excerpt="verdict: hold",
+        data_sources=DataSourceBreakdown(
+            stock_analysis="verdict: hold",
+            deepresearch="",
+        ),
+        judgment_rationale="毛利率低于门槛,给 partial,综合 hold",
         action_recommendation="观察",
         confidence="medium",
     )
