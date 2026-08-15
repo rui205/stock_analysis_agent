@@ -101,6 +101,7 @@ class TestRenderLocalMarkdown:
         assert "## 数据来源" in md
         assert "### 来自 stock_analysis" in md
         assert "### 来自 deepresearch" in md
+        assert "未调用 deepresearch" in md
         assert "## 判断理论" in md
 
     def test_escapes_pipe_and_newline_in_table_cells(self) -> None:
