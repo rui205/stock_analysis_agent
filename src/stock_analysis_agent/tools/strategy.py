@@ -223,12 +223,88 @@ def run_analyze_stock(symbol: str) -> str:
         return f"[ERROR] analyze_stock tool failed: {e}"
 
 
+def _run_deepresearch_and_collect(symbol: str, dimensions: list[str]) -> str:
+    """Run the DeepResearchAgent subagent and return its final Markdown text.
+
+    The sub-agent is driven by ``DeepResearchAgent``'s bundled prompt (with
+    ``symbol`` + ``dimensions`` injected). We return its final text verbatim —
+    no parsing, no remapping. ``DeepResearchAgent`` is imported lazily to
+    avoid the ``tools.__init__`` -> ``strategy`` -> ``deepresearch`` ->
+    ``tools.web_search`` import cycle documented in ``tools/__init__.py``.
+    """
+    from stock_analysis_agent.agent.deepresearch import DeepResearchAgent
+
+    sub = DeepResearchAgent(
+        symbol=symbol,
+        dimensions=dimensions,
+        # Inherit the orchestrator's shell opt-in: the mx-* skill data
+        # scripts need ``run_command``; without it the sub-agent can only
+        # fall back to ``web_search``.
+        include_shell_tool=_subagent_include_shell_tool,
+        # DeepResearch's default recursion_limit is None (LangGraph 25) —
+        # too small for a multi-skill deep-research run.
+        recursion_limit=100,
+    )
+    events = sub.stream(
+        [HumanMessage(f"研究 {symbol} 的以下维度并产出带证据链的报告:{'、'.join(dimensions)}")]
+    )
+    return collect_final_text(events)
+
+
+class RunDeepResearchInput(BaseModel):
+    """Input schema for the ``run_deepresearch`` tool."""
+
+    symbol: str = Field(
+        min_length=1,
+        description="Stock symbol to research, e.g. `600519.SH`, `02319.HK`, `AAPL.US`.",
+    )
+    dimensions: list[str] = Field(
+        min_length=1,
+        description=(
+            "Research dimensions derived from the strategy principles that "
+            "lack evidence, e.g. `['盈利质量-ROE', '财务稳健-现金流']`."
+        ),
+    )
+
+
+@tool(
+    "run_deepresearch",
+    description=(
+        "Run the `DeepResearchAgent` subagent on a stock symbol and one or "
+        "more research dimensions, returning its Markdown report verbatim. "
+        "Use when `run_analyze_stock`'s report lacks the data needed to "
+        "judge one or more strategy principles. Returns Markdown on success; "
+        "an `[ERROR] deepresearch tool failed: ...` string when the sub-agent "
+        "run fails."
+    ),
+    args_schema=RunDeepResearchInput,
+)
+def run_deepresearch(symbol: str, dimensions: list[str]) -> str:
+    """Synchronously run the deep-research subagent and forward its Markdown output.
+
+    Args:
+        symbol: Stock symbol, e.g. ``"600519.SH"``.
+        dimensions: Research dimensions to pass to the sub-agent.
+
+    Returns:
+        The sub-agent's final Markdown text on success, or an ``[ERROR]``-prefixed
+        string when the sub-agent's tool retries are exhausted or its graph runs
+        out of recursion budget.
+    """
+    try:
+        return _run_deepresearch_and_collect(symbol, dimensions)
+    except (ToolExecutionError, RecursionError) as e:
+        return f"[ERROR] deepresearch tool failed: {e}"
+
+
 __all__ = [
     "LoadStrategyInput",
     "RunAnalyzeStockInput",
+    "RunDeepResearchInput",
     "_list_strategy_names",
     "_parse_strategy_frontmatter",
     "load_strategy",
     "run_analyze_stock",
+    "run_deepresearch",
     "set_subagent_include_shell_tool",
 ]

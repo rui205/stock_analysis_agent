@@ -23,6 +23,7 @@ from stock_analysis_agent.tools.strategy import (
     _parse_strategy_frontmatter,
     load_strategy,
     run_analyze_stock,
+    run_deepresearch,
 )
 
 
@@ -269,3 +270,70 @@ class TestRunAnalyzeStockRecursionBudget:
         out = run_analyze_stock.invoke({"symbol": "06049.HK"})
         assert out.startswith("[ERROR]")
         assert "Recursion limit of 50" in out
+
+
+class TestRunDeepResearchTool:
+    def test_success_returns_markdown_verbatim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        md_streamed = "# DeepResearch — 600519.SH\n\nROE 三年均值 12%。\n"
+        fake_events = [
+            {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="# DeepResearch — 600519.SH\n\n")}},
+            {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="ROE 三年均值 12%。\n")}},
+        ]
+        fake_sub = MagicMock()
+        fake_sub.stream.return_value = iter(fake_events)
+        fake_cls = MagicMock(return_value=fake_sub)
+        import stock_analysis_agent.agent.deepresearch as dr
+        monkeypatch.setattr(dr, "DeepResearchAgent", fake_cls)
+        out = run_deepresearch.invoke({"symbol": "600519.SH", "dimensions": ["盈利质量-ROE"]})
+        assert out == md_streamed
+        fake_cls.assert_called_once()
+        kwargs = fake_cls.call_args.kwargs
+        assert kwargs["symbol"] == "600519.SH"
+        assert kwargs["dimensions"] == ["盈利质量-ROE"]
+        assert kwargs["include_shell_tool"] is False
+        assert kwargs["recursion_limit"] == 100
+
+    def test_tool_failure_returns_error_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from stock_analysis_agent.agent.exceptions import ToolExecutionError
+        fake_sub = MagicMock()
+        fake_sub.stream.side_effect = ToolExecutionError("simulated")
+        fake_cls = MagicMock(return_value=fake_sub)
+        import stock_analysis_agent.agent.deepresearch as dr
+        monkeypatch.setattr(dr, "DeepResearchAgent", fake_cls)
+        out = run_deepresearch.invoke({"symbol": "000001.SZ", "dimensions": ["财务稳健"]})
+        assert out.startswith("[ERROR]")
+        assert "deepresearch" in out
+        assert "simulated" in out
+
+    def test_recursion_exhaustion_returns_error_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake_sub = MagicMock()
+        fake_sub.stream.side_effect = RecursionError("simulated budget exhaustion")
+        fake_cls = MagicMock(return_value=fake_sub)
+        import stock_analysis_agent.agent.deepresearch as dr
+        monkeypatch.setattr(dr, "DeepResearchAgent", fake_cls)
+        out = run_deepresearch.invoke({"symbol": "06049.HK", "dimensions": ["估值"]})
+        assert out.startswith("[ERROR]")
+        assert "deepresearch" in out
+
+
+class TestRunDeepResearchShellPropagation:
+    def _run_with_fake_subagent(self, monkeypatch: pytest.MonkeyPatch, shell_enabled: bool) -> MagicMock:
+        import stock_analysis_agent.agent.deepresearch as dr
+        import stock_analysis_agent.tools.strategy as mod
+
+        fake_sub = MagicMock()
+        fake_sub.stream.return_value = iter([])
+        fake_cls = MagicMock(return_value=fake_sub)
+        monkeypatch.setattr(dr, "DeepResearchAgent", fake_cls)
+        monkeypatch.setattr(mod, "_subagent_include_shell_tool", shell_enabled)
+        run_deepresearch.invoke({"symbol": "06049.HK", "dimensions": ["基本面"]})
+        fake_cls.assert_called_once()
+        return fake_cls
+
+    def test_subagent_gets_shell_tool_when_enabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake_cls = self._run_with_fake_subagent(monkeypatch, shell_enabled=True)
+        assert fake_cls.call_args.kwargs["include_shell_tool"] is True
+
+    def test_subagent_shell_tool_defaults_to_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake_cls = self._run_with_fake_subagent(monkeypatch, shell_enabled=False)
+        assert fake_cls.call_args.kwargs["include_shell_tool"] is False
