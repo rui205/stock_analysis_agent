@@ -58,60 +58,53 @@ def test_cache_ttl_none_disables_expiration(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# tool exposure — load_skill / read_file always on; run_command opt-in
+# tool exposure — load_skill / read_file / web_search always on;
+# run_command on by default (opt out via include_shell_tool=False)
 # ---------------------------------------------------------------------------
 
 
-def test_default_tools_include_load_skill_read_file_web_search(tmp_path: Path) -> None:
-    """Default tool set is load_skill + read_file + web_search (no run_command).
+def test_default_tools_include_load_skill_read_file_web_search_run_command(
+    tmp_path: Path,
+) -> None:
+    """Default tool set is load_skill + read_file + web_search + run_command.
 
     These are the deep-research data-discovery surface:
       - ``load_skill`` — read a project-level SKILL.md (mx-* skills)
       - ``read_file`` — read the skill's output files / reference docs
-      - ``web_search`` — the configured external search fan-out
+      - ``web_search`` — the Tavily-backed external search
+      - ``run_command`` — execute the mx-* skill data scripts (shell)
 
-    ``run_command`` is opt-in (see ``test_run_command_omitted_by_default``).
+    ``run_command`` is on by default; opt out with ``include_shell_tool=False``.
     """
     agent = DeepResearchAgent(cache_dir=tmp_path, cache_ttl=None)
     tool_names = {t.name for t in agent.tools}
     assert "load_skill" in tool_names
     assert "read_file" in tool_names
     assert "web_search" in tool_names
-    assert "run_command" not in tool_names
+    assert "run_command" in tool_names
 
 
-def test_run_command_omitted_by_default(tmp_path: Path) -> None:
-    """``run_command`` is opt-in: off by default — never exposed unless asked.
+def test_include_shell_tool_false_removes_run_command(tmp_path: Path) -> None:
+    """``include_shell_tool=False`` drops ``run_command`` from the tool list.
 
     The shell tool is a privilege escalation (lets the agent invoke
-    arbitrary CLI programs, e.g. the mx-* skill scripts), so the safe
-    default is to leave it out of the tool list.
+    arbitrary CLI programs, e.g. the mx-* skill scripts), so callers can
+    opt out explicitly.
     """
-    agent = DeepResearchAgent(cache_dir=tmp_path, cache_ttl=None)
+    agent = DeepResearchAgent(
+        cache_dir=tmp_path, cache_ttl=None, include_shell_tool=False
+    )
     assert "run_command" not in {t.name for t in agent.tools}
 
 
-def test_include_shell_tool_adds_run_command(tmp_path: Path) -> None:
-    """When ``include_shell_tool=True``, ``run_command`` joins the tool list."""
-    agent = DeepResearchAgent(
-        cache_dir=tmp_path, cache_ttl=None, include_shell_tool=True
-    )
-    tool_names = {t.name for t in agent.tools}
-    assert "run_command" in tool_names
-    # The other defaults are still present.
-    assert "load_skill" in tool_names
-    assert "read_file" in tool_names
-    assert "web_search" in tool_names
-
-
 def test_include_shell_tool_property(tmp_path: Path) -> None:
-    """The ``include_shell_tool`` attribute reflects the constructor flag."""
-    assert DeepResearchAgent(cache_dir=tmp_path, cache_ttl=None).include_shell_tool is False
+    """The ``include_shell_tool`` attribute reflects the flag (default True)."""
+    assert DeepResearchAgent(cache_dir=tmp_path, cache_ttl=None).include_shell_tool is True
     assert (
         DeepResearchAgent(
-            cache_dir=tmp_path, cache_ttl=None, include_shell_tool=True
+            cache_dir=tmp_path, cache_ttl=None, include_shell_tool=False
         ).include_shell_tool
-        is True
+        is False
     )
 
 

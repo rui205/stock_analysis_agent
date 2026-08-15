@@ -1,8 +1,9 @@
 """DeepResearchAgent: an LLM-driven deep-research agent for stock research.
 
 Bundles the ``load_skill`` / ``read_file`` tools plus the Tavily-backed
-``web_search`` @tool, and an opt-in ``run_command`` tool for executing the
-mx-* data-skill scripts. The stock symbol and research dimensions are
+``web_search`` @tool, and a ``run_command`` tool (on by default) for
+executing the mx-* data-skill scripts. The stock symbol and research
+dimensions are
 injected into the system prompt before the LLM is called — pass
 ``prompts/deepresearch_system_prompt.md`` for the full contract (think-first
 workflow, evidence chain + confidence, ``unknown`` handling).
@@ -75,13 +76,14 @@ class DeepResearchAgent(BaseAgent):
 
     Bundles three data-discovery tools — ``load_skill``, ``read_file``,
     and the Tavily-backed ``web_search`` @tool (caching results to local
-    JSON files) — plus an opt-in ``run_command`` for executing the mx-*
-    data skill scripts. The stock symbol and research dimensions are
+    JSON files) — plus a ``run_command`` (on by default) for executing the
+    mx-* data skill scripts. The stock symbol and research dimensions are
     injected into the system prompt before the LLM is called.
 
     ``load_skill`` and ``read_file`` are always on (mirroring
-    ``StockAnalysisAgent``); ``run_command`` is opt-in via
-    ``include_shell_tool`` because it is a privilege escalation. The
+    ``StockAnalysisAgent``); ``run_command`` is on by default via
+    ``include_shell_tool=True`` — opt out with ``include_shell_tool=False``
+    because it is a privilege escalation. The
     full deep-research contract lives in
     ``prompts/deepresearch_system_prompt.md`` — loaded automatically when
     ``symbol``/``dimensions`` are given, or pass its contents as
@@ -104,7 +106,7 @@ class DeepResearchAgent(BaseAgent):
         max_retries: int = 3,
         cache_dir: str | Path | None = None,
         cache_ttl: float | None = DEFAULT_CACHE_TTL,
-        include_shell_tool: bool = False,
+        include_shell_tool: bool = True,
         **kwargs: Any,
     ) -> None:
         """Initialize the agent.
@@ -123,9 +125,10 @@ class DeepResearchAgent(BaseAgent):
             max_retries: Tool-call retry budget for transient errors.
             cache_dir: Directory for the ``web_search`` file cache.
             cache_ttl: Cache TTL in seconds; ``None`` disables expiration.
-            include_shell_tool: When ``True``, also expose ``run_command``
-                so the agent can execute the mx-* skill scripts. Off by
-                default — the shell tool is a privilege escalation.
+            include_shell_tool: When ``True`` (default), expose
+                ``run_command`` so the agent can execute the mx-* skill
+                scripts. Set ``False`` to omit it — the shell tool is a
+                privilege escalation.
             **kwargs: Forwarded to :class:`BaseAgent` (``model``,
                 ``temperature``, ``name``, ...).
         """
