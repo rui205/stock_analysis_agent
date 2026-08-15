@@ -54,6 +54,36 @@ DEFAULT_SITE_LIST: list[str] = [
 DEFAULT_CACHE_DIR: str = "~/.cache/stock-analysis-agent"
 DEFAULT_CACHE_TTL: float | None = 86400.0  # 24h in seconds
 
+#: Absolute path to the bundled system prompt template.
+_PROMPT_FILE: Path = (
+    Path(__file__).resolve().parents[1] / "prompts" / "deepresearch_system_prompt.md"
+)
+
+
+def render_research_prompt(
+    template: str,
+    *,
+    symbol: str | None,
+    dimensions: Sequence[str] | None,
+) -> str:
+    """Inject the stock symbol and research dimensions into a prompt template.
+
+    Args:
+        template: Prompt template containing ``<!-- STOCK -->`` and
+            ``<!-- DIMENSIONS -->`` placeholders.
+        symbol: Stock code to substitute for ``<!-- STOCK -->``.
+        dimensions: Research-dimension labels joined with ``、`` and
+            substituted for ``<!-- DIMENSIONS -->``.
+
+    Returns:
+        The template with both placeholders replaced. Missing placeholders
+        are a no-op (``str.replace`` leaves the text unchanged).
+    """
+    return (
+        template.replace("<!-- STOCK -->", symbol or "")
+        .replace("<!-- DIMENSIONS -->", "、".join(dimensions or []))
+    )
+
 
 class DeepResearchAgent(BaseAgent):
     """LLM-driven deep-research agent that searches configured sites and skills.
@@ -83,6 +113,8 @@ class DeepResearchAgent(BaseAgent):
     def __init__(
         self,
         *,
+        symbol: str | None = None,
+        dimensions: Sequence[str] | None = None,
         site_list: Sequence[str] | None = None,
         system_prompt: str | None = None,
         max_retries: int = 3,
@@ -94,6 +126,11 @@ class DeepResearchAgent(BaseAgent):
         """Initialize the agent.
 
         Args:
+            symbol: Stock code to inject into the system prompt
+                ``<!-- STOCK -->`` placeholder. ``None`` renders it empty.
+            dimensions: Research-dimension labels injected into the system
+                prompt ``<!-- DIMENSIONS -->`` placeholder (joined with
+                ``、``). ``None`` renders it empty.
             site_list: External search endpoints for ``web_search``.
                 Defaults to :data:`DEFAULT_SITE_LIST`.
             system_prompt: Caller-owned system prompt defining the deep
@@ -114,7 +151,11 @@ class DeepResearchAgent(BaseAgent):
         if not resolved_sites:
             raise ValueError("site_list cannot be empty")
 
-        resolved_prompt = system_prompt if system_prompt is not None else DEFAULT_SYSTEM_PROMPT
+        resolved_prompt = self._resolve_prompt(
+            system_prompt=system_prompt,
+            symbol=symbol,
+            dimensions=dimensions,
+        )
 
         resolved_dir = (
             Path(cache_dir).expanduser().resolve()
@@ -144,6 +185,26 @@ class DeepResearchAgent(BaseAgent):
             tools=tools,
             **kwargs,
         )
+
+    @staticmethod
+    def _resolve_prompt(
+        *,
+        system_prompt: str | None,
+        symbol: str | None,
+        dimensions: Sequence[str] | None,
+    ) -> str:
+        """Resolve and render the system prompt.
+
+        Precedence: explicit ``system_prompt`` > bundled ``.md`` (when
+        ``symbol``/``dimensions`` given) > :data:`DEFAULT_SYSTEM_PROMPT`.
+        """
+        if system_prompt is None and (symbol is not None or dimensions is not None):
+            template = _PROMPT_FILE.read_text(encoding="utf-8")
+        else:
+            template = (
+                system_prompt if system_prompt is not None else DEFAULT_SYSTEM_PROMPT
+            )
+        return render_research_prompt(template, symbol=symbol, dimensions=dimensions)
 
     @property
     def include_shell_tool(self) -> bool:

@@ -8,7 +8,10 @@ import pytest
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage
 
-from stock_analysis_agent.agent.deepresearch import DeepResearchAgent
+from stock_analysis_agent.agent.deepresearch import (
+    DeepResearchAgent,
+    render_research_prompt,
+)
 
 from tests.agent.conftest import ToolAwareFakeChatModel, make_ai, make_tool_call
 
@@ -268,3 +271,51 @@ def test_include_shell_tool_property(tmp_path: Path) -> None:
         ).include_shell_tool
         is True
     )
+
+
+# ---------------------------------------------------------------------------
+# symbol / dimensions injection
+# ---------------------------------------------------------------------------
+
+
+def test_render_research_prompt_injects_symbol_and_dimensions() -> None:
+    template = "股票:<!-- STOCK --> 维度:<!-- DIMENSIONS -->"
+    out = render_research_prompt(
+        template, symbol="02319.HK", dimensions=["基本面", "估值"]
+    )
+    assert out == "股票:02319.HK 维度:基本面、估值"
+
+
+def test_render_research_prompt_empty_values_render_empty() -> None:
+    template = "股票:<!-- STOCK --> 维度:<!-- DIMENSIONS -->"
+    out = render_research_prompt(template, symbol=None, dimensions=[])
+    assert out == "股票: 维度:"
+
+
+def test_symbol_and_dimensions_injected_when_system_prompt_given(tmp_path: Path) -> None:
+    agent = DeepResearchAgent(
+        system_prompt="<!-- STOCK --> / <!-- DIMENSIONS -->",
+        symbol="600519.SH",
+        dimensions=["消息面"],
+        cache_dir=tmp_path,
+        cache_ttl=None,
+    )
+    assert agent.system_prompt_value == "600519.SH / 消息面"
+
+
+def test_symbol_and_dimensions_load_md_when_no_system_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stock_analysis_agent.agent.deepresearch as dr
+
+    monkeypatch.setattr(dr, "_PROMPT_FILE", tmp_path / "prompt.md")
+    (tmp_path / "prompt.md").write_text(
+        "研究:<!-- STOCK --> / <!-- DIMENSIONS -->", encoding="utf-8"
+    )
+    agent = DeepResearchAgent(
+        symbol="AAPL",
+        dimensions=["估值"],
+        cache_dir=tmp_path,
+        cache_ttl=None,
+    )
+    assert agent.system_prompt_value == "研究:AAPL / 估值"

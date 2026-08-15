@@ -82,3 +82,10 @@ def test_declares_skill_and_tool_surface() -> None:
     text = _read_prompt()
     for name in ("mx-finance-data", "mx-finance-search", "mx-macro-data", "mx-stocks-screener", "web_search"):
         assert name in text, f"tool/skill missing from prompt: {name}"
+
+
+def test_declares_stock_and_dimensions_placeholders() -> None:
+    """The prompt must carry injectable STOCK / DIMENSIONS placeholders."""
+    text = _read_prompt()
+    assert "<!-- STOCK -->" in text, "missing <!-- STOCK --> placeholder"
+    assert "<!-- DIMENSIONS -->" in text, "missing <!-- DIMENSIONS --> placeholder"
