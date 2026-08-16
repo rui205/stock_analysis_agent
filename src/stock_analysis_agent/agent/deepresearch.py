@@ -107,6 +107,7 @@ class DeepResearchAgent(BaseAgent):
         cache_dir: str | Path | None = None,
         cache_ttl: float | None = DEFAULT_CACHE_TTL,
         include_shell_tool: bool = True,
+        thinking_budget_tokens: int = 8192,
         **kwargs: Any,
     ) -> None:
         """Initialize the agent.
@@ -129,6 +130,9 @@ class DeepResearchAgent(BaseAgent):
                 ``run_command`` so the agent can execute the mx-* skill
                 scripts. Set ``False`` to omit it — the shell tool is a
                 privilege escalation.
+            thinking_budget_tokens: Extended-thinking ("think") budget in
+                tokens (default 8192). Deep research reasons heavily, so it
+                gets a large budget. Pass ``None`` to disable thinking.
             **kwargs: Forwarded to :class:`BaseAgent` (``model``,
                 ``temperature``, ``name``, ...).
         """
@@ -161,6 +165,7 @@ class DeepResearchAgent(BaseAgent):
         super().__init__(
             system_prompt=resolved_prompt,
             max_retries=max_retries,
+            thinking_budget_tokens=thinking_budget_tokens,
             tools=tools,
             **kwargs,
         )

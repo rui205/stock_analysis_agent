@@ -12,14 +12,10 @@ been told to consult.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-# Module-level constants — resolved once at import time.
-_PACKAGE_ROOT = Path(__file__).resolve().parents[1]  # src/<package>/
-_PROJECT_ROOT = _PACKAGE_ROOT.parent.parent           # repo root (pyproject.toml)
+from stock_analysis_agent.tools._paths import PROJECT_ROOT as _PROJECT_ROOT
 
 
 class ReadFileInput(BaseModel):

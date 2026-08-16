@@ -56,6 +56,7 @@ project/
   - 顶层 `src/<package>/skill/` 不放 `__init__.py`(保持为数据目录)。
   - 若不希望随 wheel 打包,在 `pyproject.toml` 的 `[tool.hatch.build.targets.wheel]` 用 `exclude` 排除。
   - **不要**把 skill 文件散落在根目录、`docs/`、`tests/` 下,统一进 `src/<package>/skill/`。
+  - **不改 `mx-*` / `lark-*` skill 内容**:`skill/mx-*`(如 `mx-finance-data`、`mx-finance-search`、`mx-macro-data`、`mx-stocks-screener`)与 `skill/lark-*`(如 `lark-doc`、`lark-shared`)是外部引入/固定的 skill,其中的 `SKILL.md`、`scripts/`、`references/` 等一律**不做变更**。需要调整行为时在 `tools/`、`agent/`、`script/` 等自有代码里做,不要动这些 skill 内部文件。
 
 ### 强制项
 

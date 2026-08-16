@@ -4,9 +4,13 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from langchain_core.messages import ToolCall, ToolMessage
+from langchain_core.messages import AIMessage, ToolCall, ToolMessage
 
-from stock_analysis_agent.agent.middleware import _FeedbackMiddleware, _ToolRetryMiddleware
+from stock_analysis_agent.agent.middleware import (
+    _FeedbackMiddleware,
+    _ToolRetryMiddleware,
+    _strip_thinking_blocks,
+)
 from stock_analysis_agent.agent.exceptions import ToolExecutionError
 
 
@@ -318,3 +322,37 @@ async def test_feedback_lets_other_exceptions_pass_through_async() -> None:
 
     with pytest.raises(RuntimeError):
         await mw.awrap_tool_call(_make_request(), handler)
+
+
+# ---------------------------------------------------------------------------
+# _strip_thinking_blocks — drop reasoning blocks from re-sent history
+# ---------------------------------------------------------------------------
+
+
+def test_strip_thinking_blocks_removes_thinking_and_redacted() -> None:
+    """``thinking`` / ``redacted_thinking`` content blocks are dropped from a
+    list-content message, leaving ``text`` blocks intact."""
+    msg = AIMessage(
+        content=[
+            {"type": "thinking", "thinking": "hmm", "signature": "sig"},
+            {"type": "text", "text": "the answer"},
+            {"type": "redacted_thinking", "data": "redacted"},
+        ]
+    )
+    [result] = _strip_thinking_blocks([msg])
+    assert result.content == [{"type": "text", "text": "the answer"}]
+
+
+def test_strip_thinking_blocks_leaves_string_content_untouched() -> None:
+    """A string-content message (and a message with no thinking blocks) is
+    returned unchanged — the middleware is a no-op for ordinary history."""
+    msg = AIMessage(content="plain text")
+    [result] = _strip_thinking_blocks([msg])
+    assert result is msg
+
+
+def test_strip_thinking_blocks_no_thinking_blocks_is_identity() -> None:
+    """A list-content message without thinking blocks is not copied."""
+    msg = AIMessage(content=[{"type": "text", "text": "x"}])
+    [result] = _strip_thinking_blocks([msg])
+    assert result is msg

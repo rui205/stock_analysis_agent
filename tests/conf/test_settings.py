@@ -9,10 +9,17 @@ from stock_analysis_agent.conf import LLMSettings, load_llm_settings
 from stock_analysis_agent.conf.settings import (
     API_KEY_ENV_VAR,
     BASE_URL_ENV_VAR,
+    DEEPSEEK_API_KEY_ENV_VAR,
+    DEEPSEEK_BASE_URL_ENV_VAR,
+    DEEPSEEK_MODEL,
     DEFAULT_MAX_TOKENS,
     DEFAULT_MODEL,
     DEFAULT_MODEL_PROVIDER,
+    DEFAULT_SELECT_SOURCE,
     DEFAULT_TEMPERATURE,
+    SELECT_SOURCE_ENV_VAR,
+    SOURCE_DEEPSEEK,
+    SOURCE_QWEN,
     MissingAPIKeyError,
     _mask_key,
     get_settings,
@@ -37,6 +44,69 @@ def test_explicit_provider_override() -> None:
     """The provider can be overridden per-call for non-anthropic routes."""
     settings = load_llm_settings(api_key="dummy", provider="openai")
     assert settings.provider == "openai"
+
+
+# ---------------------------------------------------------------------------
+# select_source — qwen vs deepseek resolution
+# ---------------------------------------------------------------------------
+
+
+def test_default_select_source_is_qwen() -> None:
+    """Without an override, the source resolves to ``qwen``."""
+    settings = load_llm_settings(api_key="dummy")
+    assert settings.select_source == SOURCE_QWEN == DEFAULT_SELECT_SOURCE
+
+
+def test_deepseek_source_resolves_deepseek_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``select_source="deepseek"`` must resolve the DeepSeek model, key,
+    and endpoint from the dedicated env vars."""
+    monkeypatch.setenv(DEEPSEEK_API_KEY_ENV_VAR, "deepseek-key")
+    monkeypatch.setenv(DEEPSEEK_BASE_URL_ENV_VAR, "https://api.deepseek.com/anthropic")
+    settings = load_llm_settings(select_source="deepseek")
+    assert settings.model == DEEPSEEK_MODEL == "deepseek-v4-pro"
+    assert settings.api_key == "deepseek-key"
+    assert settings.base_url == "https://api.deepseek.com/anthropic"
+    assert settings.select_source == SOURCE_DEEPSEEK
+
+
+def test_select_source_is_read_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The source can be selected via ``SELECT_SOURCE`` without an explicit arg."""
+    monkeypatch.setenv(SELECT_SOURCE_ENV_VAR, "deepseek")
+    monkeypatch.setenv(DEEPSEEK_API_KEY_ENV_VAR, "deepseek-key")
+    monkeypatch.setenv(DEEPSEEK_BASE_URL_ENV_VAR, "https://api.deepseek.com/anthropic")
+    settings = load_llm_settings()
+    assert settings.select_source == SOURCE_DEEPSEEK
+    assert settings.model == DEEPSEEK_MODEL
+
+
+def test_deepseek_source_missing_api_key_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DeepSeek mode must fail fast when ``DEEPSEEK_API_KEY`` is unset."""
+    monkeypatch.delenv(DEEPSEEK_API_KEY_ENV_VAR, raising=False)
+    monkeypatch.setenv(DEEPSEEK_BASE_URL_ENV_VAR, "https://api.deepseek.com/anthropic")
+    with pytest.raises(MissingAPIKeyError):
+        load_llm_settings(select_source="deepseek")
+
+
+def test_deepseek_source_missing_base_url_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DeepSeek mode must fail fast when ``DEEPSEEK_BASE_URL`` is unset."""
+    monkeypatch.setenv(DEEPSEEK_API_KEY_ENV_VAR, "deepseek-key")
+    monkeypatch.delenv(DEEPSEEK_BASE_URL_ENV_VAR, raising=False)
+    with pytest.raises(MissingAPIKeyError):
+        load_llm_settings(select_source="deepseek")
+
+
+def test_invalid_select_source_raises() -> None:
+    """An unknown source name must raise a clear ``ValueError``."""
+    with pytest.raises(ValueError):
+        load_llm_settings(api_key="dummy", select_source="gpt")
 
 
 def test_api_key_is_read_from_environ(monkeypatch: pytest.MonkeyPatch) -> None:

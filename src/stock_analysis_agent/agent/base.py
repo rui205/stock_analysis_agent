@@ -1,6 +1,7 @@
 """BaseAgent: a reusable wrapper around langchain.agents.create_agent."""
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from typing import Any, cast
 
@@ -10,8 +11,10 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.schema import StreamEvent
 from langchain_core.tools import BaseTool
 
+from stock_analysis_agent.agent.exceptions import AgentTimeoutError
 from stock_analysis_agent.agent.middleware import (
     _FeedbackMiddleware,
+    _StripThinkingMiddleware,
     _ToolRetryMiddleware,
 )
 from stock_analysis_agent.conf.settings import (
@@ -21,6 +24,42 @@ from stock_analysis_agent.conf.settings import (
 )
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
+
+logger = logging.getLogger(__name__)
+
+
+def _usage_from_event(event: StreamEvent) -> tuple[int, int] | None:
+    """Best-effort ``(input_tokens, output_tokens)`` from a chat-model-end event.
+
+    Usage lives in a few different shapes across LangChain versions and
+    providers; probe the common ones and return ``None`` when it can't be
+    located (callers then just skip the summary log).
+    """
+    output = (event.get("data") or {}).get("output")
+    if output is None:
+        return None
+
+    usage: Any = None
+    if isinstance(output, dict):
+        usage = (output.get("llm_output") or {}).get("usage")
+    else:
+        try:
+            generations = getattr(output, "generations", None)
+            message = generations[0][0].message if generations else None
+            usage = getattr(message, "usage_metadata", None)
+            if not isinstance(usage, dict):
+                response_meta = getattr(message, "response_metadata", None)
+                if isinstance(response_meta, dict):
+                    usage = response_meta.get("usage")
+        except (AttributeError, IndexError, TypeError):
+            usage = None
+
+    if not isinstance(usage, dict):
+        return None
+    return (
+        int(usage.get("input_tokens", 0) or 0),
+        int(usage.get("output_tokens", 0) or 0),
+    )
 
 
 class BaseAgent:
@@ -34,9 +73,11 @@ class BaseAgent:
 
     Default model, temperature, and ``max_tokens`` are sourced from
     :mod:`stock_analysis_agent.conf.settings` (single source of truth).
-    The API key is read from the ``ANTHROPIC_API_KEY`` env var at
-    :meth:`_build_graph` time — never hardcoded — via
-    :func:`stock_analysis_agent.conf.settings.get_settings`.
+    The API key, model, and endpoint are resolved at :meth:`_build_graph`
+    time — never hardcoded — via
+    :func:`stock_analysis_agent.conf.settings.get_settings`, which honors
+    the ``select_source`` config to switch between the qwen and deepseek
+    models.
     """
 
     def __init__(
@@ -47,9 +88,11 @@ class BaseAgent:
         model: str = DEFAULT_MODEL,
         temperature: float = DEFAULT_TEMPERATURE,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        thinking_budget_tokens: int | None = None,
         max_retries: int = 2,
         tool_failure_budget: int = 3,
         recursion_limit: int | None = None,
+        timeout: float | None = None,
         name: str | None = None,
     ) -> None:
         self._system_prompt = system_prompt
@@ -57,9 +100,11 @@ class BaseAgent:
         self._model = model
         self._temperature = temperature
         self._max_tokens = max_tokens
+        self._thinking_budget_tokens = thinking_budget_tokens
         self._max_retries = max_retries
         self._tool_failure_budget = tool_failure_budget
         self._recursion_limit = recursion_limit
+        self._timeout = timeout
         self._name = name if name is not None else type(self).__name__
 
     @property
@@ -78,6 +123,17 @@ class BaseAgent:
     @property
     def max_tokens(self) -> int:
         return self._max_tokens
+
+    @property
+    def thinking_budget_tokens(self) -> int | None:
+        """Extended-thinking ("think") budget in tokens, or ``None`` to disable.
+
+        When set, :meth:`_build_graph` passes
+        ``thinking={"type": "enabled", "budget_tokens": N}`` to
+        ``init_chat_model`` so the model emits a hidden reasoning pass
+        before answering.
+        """
+        return self._thinking_budget_tokens
 
     @property
     def max_retries(self) -> int:
@@ -101,6 +157,15 @@ class BaseAgent:
         Subclasses can set this to cap ReAct-style iteration depth.
         """
         return self._recursion_limit
+
+    @property
+    def timeout(self) -> float | None:
+        """Wall-clock timeout (seconds) applied to a whole run.
+
+        ``None`` (default) disables the guard. When set, ``stream`` /
+        ``astream`` raise :class:`AgentTimeoutError` if the run exceeds it.
+        """
+        return self._timeout
 
     def _resolve_config(
         self, config: RunnableConfig | None
@@ -136,20 +201,22 @@ class BaseAgent:
         """Construct the CompiledStateGraph. Imported lazily so module
         import is cheap.
 
-        The LLM API key is sourced from ``$ANTHROPIC_API_KEY`` via
-        :func:`stock_analysis_agent.conf.settings.get_settings` and
-        passed explicitly to ``init_chat_model``. A missing env var
-        raises :class:`MissingAPIKeyError` from that helper — by design,
-        so operators see a clear error before the LangChain stack
-        attempts an unauthenticated call.
+        The LLM API key, model, and endpoint are sourced from
+        :func:`stock_analysis_agent.conf.settings.get_settings` and passed
+        explicitly to ``init_chat_model``. The model source is chosen by
+        ``select_source`` (see :mod:`stock_analysis_agent.conf.settings`):
+        ``qwen`` uses ``$ANTHROPIC_API_KEY`` / ``$ANTHROPIC_BASE_URL``,
+        ``deepseek`` uses ``$DEEPSEEK_API_KEY`` / ``$DEEPSEEK_BASE_URL``.
+        A missing env var raises :class:`MissingAPIKeyError` from that
+        helper — by design, so operators see a clear error before the
+        LangChain stack attempts an unauthenticated call.
 
         The provider is also passed explicitly (``model_provider``).
         LangChain's ``init_chat_model`` cannot infer a provider from
-        the bare ``MiniMax-M3`` model id, even though MiniMax is
-        reached via an Anthropic-protocol endpoint
-        (``$ANTHROPIC_BASE_URL``). Declaring the provider here routes
-        the call through :class:`langchain_anthropic.ChatAnthropic`,
-        which the Anthropic SDK drives against the configured base URL.
+        the bare model id, even though the endpoint speaks the Anthropic
+        protocol. Declaring ``model_provider="anthropic"`` routes the
+        call through :class:`langchain_anthropic.ChatAnthropic`, which
+        the Anthropic SDK drives against the configured ``base_url``.
         """
         from langchain.agents import create_agent
         from langchain.chat_models import init_chat_model
@@ -157,14 +224,31 @@ class BaseAgent:
         from stock_analysis_agent.conf.settings import get_settings
 
         settings = get_settings()
+        # The model id is source-aware: when the agent was built with the
+        # default model (no per-agent override), defer to ``settings.model``
+        # so ``select_source`` can switch between qwen and deepseek. An
+        # explicit per-agent ``model=`` still wins.
+        model_id = self._model if self._model != DEFAULT_MODEL else settings.model
+        thinking = (
+            {"type": "enabled", "budget_tokens": self._thinking_budget_tokens}
+            if self._thinking_budget_tokens is not None
+            else None
+        )
         model = init_chat_model(
-            self._model,
+            model_id,
             temperature=self._temperature,
             max_tokens=self._max_tokens,
             api_key=settings.api_key,
+            base_url=settings.base_url,
             model_provider=settings.provider,
+            thinking=thinking,
         )
         middleware = [
+            # Strips thinking blocks from the re-sent history so the
+            # deepseek/qwen gateways never receive a malformed thinking
+            # block (400 "missing field 'thinking'"). Orthogonal to the
+            # tool-call middlewares below — it hooks wrap_model_call only.
+            _StripThinkingMiddleware(),
             # First defined = outermost: feedback must wrap the retry
             # layer so it sees the retry layer's exhausted
             # ToolExecutionError and can degrade it into a ToolMessage.
@@ -208,13 +292,43 @@ class BaseAgent:
         exception_holder: list[BaseException] = []
 
         async def _drain() -> None:
+            input_tokens = 0
+            output_tokens = 0
             try:
-                async for event in graph.astream_events(
-                    cast(InputAgentState, {"messages": list(messages)}),
-                    version="v2",
-                    config=resolved_config,
-                ):
-                    event_queue.put(event)
+                async def _consume() -> None:
+                    nonlocal input_tokens, output_tokens
+                    async for event in graph.astream_events(
+                        cast(InputAgentState, {"messages": list(messages)}),
+                        version="v2",
+                        config=resolved_config,
+                    ):
+                        if event.get("event") == "on_chat_model_end":
+                            usage = _usage_from_event(event)
+                            if usage is not None:
+                                input_tokens += usage[0]
+                                output_tokens += usage[1]
+                        event_queue.put(event)
+
+                if self._timeout is not None:
+                    await asyncio.wait_for(_consume(), timeout=self._timeout)
+                else:
+                    await _consume()
+                if input_tokens or output_tokens:
+                    logger.info(
+                        "agent %s token usage: input=%d output=%d",
+                        self._name,
+                        input_tokens,
+                        output_tokens,
+                    )
+            except TimeoutError as exc:
+                if self._timeout is None:
+                    exception_holder.append(exc)
+                else:
+                    timeout_err = AgentTimeoutError(
+                        f"agent {self._name} exceeded {self._timeout}s timeout"
+                    )
+                    timeout_err.__cause__ = exc
+                    exception_holder.append(timeout_err)
             except BaseException as exc:
                 exception_holder.append(exc)
             finally:
@@ -250,13 +364,49 @@ class BaseAgent:
 
         Builds a fresh graph on each call and consumes its
         `astream_events` generator. No internal state is retained
-        between calls.
+        between calls. An optional ``timeout`` (see constructor) raises
+        :class:`AgentTimeoutError` when the run exceeds it.
         """
+        import asyncio
+
         graph = self._build_graph()
         resolved_config = self._resolve_config(config)
-        async for event in graph.astream_events(
-            cast(InputAgentState, {"messages": list(messages)}),
-            version="v2",
-            config=resolved_config,
-        ):
-            yield event
+        input_tokens = 0
+        output_tokens = 0
+
+        async def _iter() -> AsyncIterator[StreamEvent]:
+            nonlocal input_tokens, output_tokens
+            async for event in graph.astream_events(
+                cast(InputAgentState, {"messages": list(messages)}),
+                version="v2",
+                config=resolved_config,
+            ):
+                if event.get("event") == "on_chat_model_end":
+                    usage = _usage_from_event(event)
+                    if usage is not None:
+                        input_tokens += usage[0]
+                        output_tokens += usage[1]
+                yield event
+
+        try:
+            if self._timeout is None:
+                async for event in _iter():
+                    yield event
+            else:
+                async with asyncio.timeout(self._timeout):
+                    async for event in _iter():
+                        yield event
+        except TimeoutError as exc:
+            if self._timeout is None:
+                raise
+            raise AgentTimeoutError(
+                f"agent {self._name} exceeded {self._timeout}s timeout"
+            ) from exc
+        finally:
+            if input_tokens or output_tokens:
+                logger.info(
+                    "agent %s token usage: input=%d output=%d",
+                    self._name,
+                    input_tokens,
+                    output_tokens,
+                )

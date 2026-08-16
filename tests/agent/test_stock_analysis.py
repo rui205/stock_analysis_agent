@@ -128,6 +128,11 @@ def test_default_recursion_limit_is_fifty() -> None:
     assert _agent().recursion_limit == 50
 
 
+def test_default_thinking_budget_is_4096() -> None:
+    """Single-stock analysis enables a moderate extended-thinking budget."""
+    assert _agent().thinking_budget_tokens == 4096
+
+
 def test_custom_recursion_limit_is_stored() -> None:
     """Caller may override the default; the value is exposed verbatim."""
     agent = StockAnalysisAgent(

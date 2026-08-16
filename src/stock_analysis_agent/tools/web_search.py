@@ -39,6 +39,20 @@ _CACHE_PROVIDER: _Provider[_FileCache | None] = _Provider()
 #: is stored under a single ``site`` key to reuse ``_FileCache`` unchanged.
 _TAVILY_SITE_KEY: str = "tavily"
 
+#: Process-wide TavilyAdapter singleton — constructed lazily on first search
+#: so ``TAVILY_API_KEY`` is only required when the tool is actually called,
+#: not at import time. Reusing it avoids re-reading the env var and rebuilding
+#: the SDK client on every search.
+_TAVILY_ADAPTER: TavilyAdapter | None = None
+
+
+def _get_tavily_adapter() -> TavilyAdapter:
+    """Return the process-wide :class:`TavilyAdapter`, constructing it lazily."""
+    global _TAVILY_ADAPTER
+    if _TAVILY_ADAPTER is None:
+        _TAVILY_ADAPTER = TavilyAdapter()
+    return _TAVILY_ADAPTER
+
 
 class WebSearchInput(BaseModel):
     """Input schema for the ``web_search`` tool."""
@@ -102,7 +116,7 @@ def _web_search(query: str) -> str:  # pyright: ignore[reportUnusedFunction]
             return hit
 
     try:
-        results = TavilyAdapter().search(query)
+        results = _get_tavily_adapter().search(query)
     except TavilySearchError as exc:
         raise ToolExecutionError(f"web_search failed: {exc}") from exc
 

@@ -19,6 +19,7 @@ def test_default_construction_uses_module_constants(tmp_path: Path) -> None:
     assert agent.system_prompt_value == DEFAULT_SYSTEM_PROMPT
     assert agent.max_retries == 3
     assert agent.cache_dir == tmp_path.resolve()
+    assert agent.thinking_budget_tokens == 8192
 
 
 def test_custom_system_prompt_overrides_default(tmp_path: Path) -> None:

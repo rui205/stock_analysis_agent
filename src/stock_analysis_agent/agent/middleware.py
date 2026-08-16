@@ -15,7 +15,7 @@ from langchain_core.messages import ToolMessage
 from stock_analysis_agent.agent.exceptions import ToolExecutionError
 
 if TYPE_CHECKING:
-    from langchain.agents.middleware.types import ToolCallRequest
+    from langchain.agents.middleware.types import ModelRequest, ToolCallRequest
 
 
 # Exceptions considered "transient" — retried up to max_retries.
@@ -334,4 +334,67 @@ class _FeedbackMiddleware(AgentMiddleware):
             content=f"[ERROR] {exc}{_FEEDBACK_GUIDANCE}",
             tool_call_id=_tool_call_id(request),
             status="error",
+        )
+
+
+_THINKING_BLOCK_TYPES: frozenset[str] = frozenset(("thinking", "redacted_thinking"))
+
+
+def _strip_thinking_blocks(messages: list[Any]) -> list[Any]:
+    """Return ``messages`` with thinking blocks removed from list-content messages.
+
+    ``deepseek-v4-pro`` (and qwen's gateway) require ``thinking`` to be
+    enabled in the request, but their Anthropic-compatible endpoints cannot
+    deserialize the thinking blocks langchain re-sends in a long multi-turn
+    history — the streaming merge occasionally drops the ``thinking`` field,
+    producing ``400 missing field 'thinking'``. Because these gateways
+    regenerate reasoning server-side each turn, past thinking blocks are safe
+    to drop; stripping them keeps the re-sent request schema valid.
+    """
+    stripped: list[Any] = []
+    for msg in messages:
+        content = getattr(msg, "content", None)
+        has_thinking = isinstance(content, list) and any(
+            isinstance(block, dict) and block.get("type") in _THINKING_BLOCK_TYPES
+            for block in content
+        )
+        if has_thinking:
+            msg = msg.model_copy(
+                update={
+                    "content": [
+                        block
+                        for block in content
+                        if not (
+                            isinstance(block, dict)
+                            and block.get("type") in _THINKING_BLOCK_TYPES
+                        )
+                    ]
+                }
+            )
+        stripped.append(msg)
+    return stripped
+
+
+class _StripThinkingMiddleware(AgentMiddleware):
+    """Strip thinking blocks from the message history before each model call.
+
+    See :func:`_strip_thinking_blocks` for why. Applies on every model
+    invocation; a no-op when the history has no thinking blocks (e.g. the
+    first turn, or when ``thinking`` is disabled).
+    """
+
+    def wrap_model_call(
+        self, request: "ModelRequest", handler: Callable[..., Any]
+    ) -> Any:
+        """Sync path: strip thinking blocks, then delegate to ``handler``."""
+        return handler(
+            request.override(messages=_strip_thinking_blocks(request.messages))
+        )
+
+    async def awrap_model_call(
+        self, request: "ModelRequest", handler: Callable[..., Any]
+    ) -> Any:
+        """Async path: mirror of :meth:`wrap_model_call`."""
+        return await handler(
+            request.override(messages=_strip_thinking_blocks(request.messages))
         )

@@ -132,6 +132,70 @@ def test_base_agent_build_graph_passes_api_key_from_env(
         settings_module._cached_settings.cache_clear()
 
 
+def test_base_agent_build_graph_passes_base_url_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_build_graph`` forwards the resolved endpoint (``base_url``) to
+    ``init_chat_model`` so a non-default gateway (MiniMax / DeepSeek) is
+    reached instead of the SDK's default endpoint."""
+    import langchain.chat_models as chat_models_module
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-supplied-key")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.minimaxi.com/anthropic")
+
+    from stock_analysis_agent.conf import settings as settings_module
+
+    settings_module._cached_settings.cache_clear()
+    try:
+        captured: dict = {}
+
+        def _fake_init(model: str, **kwargs):  # type: ignore[no-untyped-def]
+            captured["model"] = model
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(chat_models_module, "init_chat_model", _fake_init)
+
+        agent = _NoopAgent()
+        agent._build_graph()
+
+        assert captured["base_url"] == "https://api.minimaxi.com/anthropic"
+    finally:
+        settings_module._cached_settings.cache_clear()
+
+
+def test_base_agent_build_graph_passes_thinking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_build_graph`` forwards the extended-thinking budget to
+    ``init_chat_model`` as ``thinking={"type": "enabled", "budget_tokens": N}``
+    when a budget is set, and ``None`` when thinking is disabled."""
+    import langchain.chat_models as chat_models_module
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-supplied-key")
+
+    from stock_analysis_agent.conf import settings as settings_module
+
+    settings_module._cached_settings.cache_clear()
+    try:
+        captured: dict = {}
+
+        def _fake_init(model: str, **kwargs):  # type: ignore[no-untyped-def]
+            captured["model"] = model
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(chat_models_module, "init_chat_model", _fake_init)
+
+        _NoopAgent(thinking_budget_tokens=8192)._build_graph()
+        assert captured["thinking"] == {"type": "enabled", "budget_tokens": 8192}
+
+        _NoopAgent()._build_graph()
+        assert captured["thinking"] is None
+    finally:
+        settings_module._cached_settings.cache_clear()
+
+
 def test_base_agent_build_graph_raises_when_api_key_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -484,7 +548,12 @@ def _patch_graph_building(monkeypatch: pytest.MonkeyPatch, model) -> None:  # ty
     monkeypatch.setattr(
         settings_mod,
         "get_settings",
-        lambda: SimpleNamespace(api_key="test-key", provider="anthropic"),
+        lambda: SimpleNamespace(
+            api_key="test-key",
+            provider="anthropic",
+            model="test-model",
+            base_url=None,
+        ),
     )
 
 
@@ -572,4 +641,58 @@ def test_feedback_lets_llm_recover_after_tool_failure(monkeypatch: pytest.Monkey
     assert len(error_msgs) == 1
     assert error_msgs[0].content.startswith("[ERROR] ")
     assert getattr(final_messages[-1], "content", "") == "done"
+
+
+# ---------------------------------------------------------------------------
+# timeout — wall-clock guard + token-usage summary
+# ---------------------------------------------------------------------------
+
+
+def test_agent_timeout_defaults_to_none() -> None:
+    """``timeout`` defaults to ``None`` (no wall-clock guard)."""
+    assert _NoopAgent().timeout is None
+
+
+def test_agent_timeout_stores_value() -> None:
+    """``timeout`` is stored verbatim when provided."""
+    assert _NoopAgent(timeout=1.5).timeout == 1.5
+
+
+def test_agent_timeout_raises_when_run_exceeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run that outlives ``timeout`` raises :class:`AgentTimeoutError`."""
+    import asyncio
+
+    from stock_analysis_agent.agent.exceptions import AgentTimeoutError
+
+    class _HangingGraph:
+        async def astream_events(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            await asyncio.sleep(60)
+            yield {"event": "on_chain_end"}  # pragma: no cover — never reached
+
+    agent = _NoopAgent(timeout=0.05)
+    monkeypatch.setattr(agent, "_build_graph", lambda: _HangingGraph())
+    with pytest.raises(AgentTimeoutError):
+        list(agent.stream([HumanMessage(content="hi")]))
+
+
+def test_usage_from_event_returns_none_without_output() -> None:
+    """Missing usage metadata yields ``None`` rather than crashing."""
+    from stock_analysis_agent.agent.base import _usage_from_event
+
+    assert _usage_from_event({"event": "on_chat_model_end", "data": {}}) is None
+
+
+def test_usage_from_event_extracts_llm_output_usage() -> None:
+    """The ``llm_output.usage`` dict shape is extracted as token counts."""
+    from stock_analysis_agent.agent.base import _usage_from_event
+
+    event = {
+        "event": "on_chat_model_end",
+        "data": {"output": {"llm_output": {"usage": {
+            "input_tokens": 10, "output_tokens": 5,
+        }}}},
+    }
+    assert _usage_from_event(event) == (10, 5)
 

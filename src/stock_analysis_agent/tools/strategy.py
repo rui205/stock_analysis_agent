@@ -18,19 +18,17 @@ the raw report and decides what to do with it.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from stock_analysis_agent.agent.exceptions import ToolExecutionError
 from stock_analysis_agent.agent.stock_analysis import StockAnalysisAgent
 from stock_analysis_agent.agent.stream import collect_final_text
+from stock_analysis_agent.tools._paths import PACKAGE_ROOT
 
 # Resolved at import time — points at conf/strategies/. Tests may
 # monkeypatch this to a tmp dir.
-_STRATEGIES_DIR = Path(__file__).resolve().parents[1] / "conf" / "strategies"
+_STRATEGIES_DIR = PACKAGE_ROOT / "conf" / "strategies"
 
 #: Frontmatter keys the strategy schema recognises. Anything else
 #: (e.g. ``tags:`` in ``value-investing.md``) is dropped by
@@ -215,11 +213,12 @@ def run_analyze_stock(symbol: str) -> str:
     """
     try:
         return _run_subagent_and_collect(symbol)
-    except (ToolExecutionError, RecursionError) as e:
-        # ``RecursionError`` covers langgraph's ``GraphRecursionError``
-        # (a subclass): if the sub-agent exhausts its step budget
-        # mid-workflow, degrade to the soft ``[ERROR]`` contract instead
-        # of letting the exception escape and abort the orchestrator run.
+    except Exception as e:  # noqa: BLE001 — degrade any sub-agent failure to [ERROR]
+        # Covers ``ToolExecutionError`` (tool retries exhausted) and
+        # ``RecursionError``/``GraphRecursionError`` (step budget), plus
+        # any other unhandled failure (auth, file I/O, JSON, …). Degrade
+        # to the soft ``[ERROR]`` contract rather than letting the
+        # exception escape and abort the orchestrator run.
         return f"[ERROR] analyze_stock tool failed: {e}"
 
 
@@ -293,7 +292,7 @@ def run_deepresearch(symbol: str, dimensions: list[str]) -> str:
     """
     try:
         return _run_deepresearch_and_collect(symbol, dimensions)
-    except (ToolExecutionError, RecursionError) as e:
+    except Exception as e:  # noqa: BLE001 — degrade any sub-agent failure to [ERROR]
         return f"[ERROR] deepresearch tool failed: {e}"
 
 

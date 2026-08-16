@@ -10,6 +10,14 @@ from stock_analysis_agent.memory import _FileCache
 from stock_analysis_agent.tools import web_search as ws
 
 
+@pytest.fixture(autouse=True)
+def _reset_tavily_adapter() -> None:
+    """Reset the TavilyAdapter singleton so each test builds a fresh instance."""
+    ws._TAVILY_ADAPTER = None
+    yield
+    ws._TAVILY_ADAPTER = None
+
+
 def _wire_cache(tmp_path: Path) -> _FileCache:
     cache = _FileCache(tmp_path, ttl_seconds=60.0)
     ws._CACHE_PROVIDER.value = cache

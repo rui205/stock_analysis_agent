@@ -20,15 +20,15 @@ automatically.
 """
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TypedDict
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from stock_analysis_agent.tools._paths import PACKAGE_ROOT
+
 # Module-level constants — resolved once at import time.
-_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-_SKILLS_DIR = _PACKAGE_ROOT / "skill"
+_SKILLS_DIR = PACKAGE_ROOT / "skill"
 
 
 class SkillIndexEntry(TypedDict):

@@ -52,6 +52,7 @@ class StockAnalysisAgent(BaseAgent):
         include_shell_tool: bool = False,
         max_retries: int = 3,
         recursion_limit: int = 50,
+        thinking_budget_tokens: int = 4096,
         **kwargs: Any,
     ) -> None:
         """Initialize the agent.
@@ -64,6 +65,10 @@ class StockAnalysisAgent(BaseAgent):
                 tool is a privilege escalation.
             max_retries: Tool-call retry budget for transient errors.
             recursion_limit: LangGraph step budget for the agent loop.
+            thinking_budget_tokens: Extended-thinking ("think") budget in
+                tokens (default 4096). Single-stock analysis is lighter than
+                deep research, so it gets a smaller budget. Pass ``None``
+                to disable thinking.
             **kwargs: Forwarded to :class:`BaseAgent` (``model``,
                 ``temperature``, ``name``, ...).
 
@@ -83,6 +88,7 @@ class StockAnalysisAgent(BaseAgent):
             system_prompt=system_prompt,
             max_retries=max_retries,
             recursion_limit=recursion_limit,
+            thinking_budget_tokens=thinking_budget_tokens,
             tools=tools,
             **kwargs,
         )

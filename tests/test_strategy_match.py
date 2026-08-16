@@ -369,6 +369,10 @@ class TestStrategyMatchAgent:
         agent = StrategyMatchAgent(system_prompt="hello")
         assert agent.recursion_limit == 120
 
+    def test_thinking_budget_default_is_8192(self) -> None:
+        agent = StrategyMatchAgent(system_prompt="hello")
+        assert agent.thinking_budget_tokens == 8192
+
     def test_shell_flag_propagates_to_subagent_provider_when_enabled(self) -> None:
         """``include_shell_tool=True`` must reach the module-level flag that
         ``run_analyze_stock`` reads — the sub-agent's stock-analysis

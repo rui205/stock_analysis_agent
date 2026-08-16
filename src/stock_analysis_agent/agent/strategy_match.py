@@ -65,6 +65,10 @@ class StrategyMatchAgent(BaseAgent):
             rounds + the final answer — ~15-20 graph nodes total.
             Default 120 gives headroom for the analyze-stock subagent plus up
             to 3 deep-research fallback calls.
+        thinking_budget_tokens: Extended-thinking ("think") budget in
+            tokens (default 8192). Strategy matching reasons over multiple
+            criteria, so it gets a large budget. Pass ``None`` to disable
+            thinking.
     """
 
     def __init__(
@@ -74,6 +78,7 @@ class StrategyMatchAgent(BaseAgent):
         include_shell_tool: bool = False,
         max_retries: int = 2,
         recursion_limit: int = 120,
+        thinking_budget_tokens: int = 8192,
         **kwargs: Any,
     ) -> None:
         if not system_prompt:
@@ -99,6 +104,7 @@ class StrategyMatchAgent(BaseAgent):
             system_prompt=system_prompt,
             max_retries=max_retries,
             recursion_limit=recursion_limit,
+            thinking_budget_tokens=thinking_budget_tokens,
             tools=tools,
             **kwargs,
         )
