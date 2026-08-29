@@ -21,9 +21,9 @@ Two-tier loading model:
 Adding a new tool requires:
 
 1. Decorate the function with ``@tool("name", args_schema=InputModel)``.
-2. Add the @tool object to :func:`list_tools`.
-3. Add a ``ToolOutputSpec`` entry under :data:`_TOOL_OUTPUTS` keyed by
-   the tool name.
+2. Add one :class:`_ToolSpec` entry to :data:`_TOOL_SPECS` (name + output
+   description + the eager tool object, or ``None`` for a lazy strategy
+   tool). The catalog and output specs derive from this single source.
 
 The input columns are introspected from the @tool's ``args_schema``
 Pydantic model (via ``model_json_schema()``), so adding a new field
@@ -32,6 +32,7 @@ second-place edit needed.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TypedDict, cast
 
 from langchain_core.tools import BaseTool
@@ -71,7 +72,7 @@ class ToolIndexEntry(TypedDict):
             tool's ``args_schema`` to build this list.
         output: Human-readable description of the return value shape,
             plus any documented raises. Pulled from
-            :data:`_TOOL_OUTPUTS` (hand-curated, since the return
+            :data:`_TOOL_SPECS` (hand-curated, since the return
             type isn't carried on the @tool object).
     """
 
@@ -81,51 +82,66 @@ class ToolIndexEntry(TypedDict):
     output: str
 
 
-class ToolOutputSpec(TypedDict):
-    """Hand-curated return-shape metadata for a tool.
+@dataclass(frozen=True)
+class _ToolSpec:
+    """One self-built tool in the catalog.
 
-    The ``@tool`` decorator does not expose a return-type schema
-    (LangChain picks the return type from the function annotation,
-    but a string description isn't available). These specs live next
-    to the tool in code review so updates to behaviour land in the
-    same diff.
+    Colocates the tool name, its hand-curated output description, and the
+    ``@tool`` object so the name → output → object mapping can't drift. A
+    ``None`` tool marks a lazy strategy tool (resolved on demand to avoid
+    the ``tools`` ↔ ``agent`` import cycle).
     """
 
+    name: str
     output: str
+    tool: BaseTool | None = None
 
 
-#: Per-tool return-shape metadata. Keyed by the @tool name (matches
-#: ``@tool("...")`` and ``Tool.name``).
-_TOOL_OUTPUTS: dict[str, ToolOutputSpec] = {
-    "load_skill": {
-        "output": (
+def _strategy_tool(name: str) -> BaseTool:
+    """Lazily import one strategy tool by name (avoids the import cycle)."""
+    from stock_analysis_agent.tools import strategy as _strategy
+
+    return cast(BaseTool, getattr(_strategy, name))
+
+
+#: Single source of truth for the self-built tool catalog. ``list_tools``
+#: and :func:`_output_for` both derive from this tuple.
+_TOOL_SPECS: tuple[_ToolSpec, ...] = (
+    _ToolSpec(
+        "load_skill",
+        (
             "`str` — full Markdown content of the skill's `SKILL.md` "
             "file. The LLM should follow these instructions to produce "
             "the formatted output for the user. Raises "
             "`FileNotFoundError` for unknown skill names — the error "
             "message lists the available skills."
         ),
-    },
-    "load_strategy": {
-        "output": (
+        load_skill,
+    ),
+    _ToolSpec(
+        "load_strategy",
+        (
             "`str` — full Markdown content of the strategy file "
             "(YAML frontmatter + body). The LLM uses the natural-language "
             "principles in the body to drive per-criterion matching. "
             "Raises `FileNotFoundError` for unknown strategy names — the "
             "error message lists the available strategies."
         ),
-    },
-    "read_file": {
-        "output": (
+    ),
+    _ToolSpec(
+        "read_file",
+        (
             "`str` — UTF-8 text content of the file. Binary inputs "
             "may raise `UnicodeDecodeError`. Raises `ValueError` on "
             "empty path or path-traversal; `IsADirectoryError` when "
             "the path is a directory; `FileNotFoundError` when the "
             "file does not exist."
         ),
-    },
-    "run_command": {
-        "output": (
+        read_file,
+    ),
+    _ToolSpec(
+        "run_command",
+        (
             "`str` — formatted text block of the form::\n\n"
             "    $ <command> <args...>\n"
             "    cwd: <cwd>\n"
@@ -140,22 +156,25 @@ _TOOL_OUTPUTS: dict[str, ToolOutputSpec] = {
             "`TypeError` when `argv` isn't a list of strings; "
             "`FileNotFoundError` when `command` is not on `PATH`."
         ),
-    },
-    "run_analyze_stock": {
-        "output": (
+        run_command,
+    ),
+    _ToolSpec(
+        "run_analyze_stock",
+        (
             "`str` — verbatim Markdown report produced by the embedded "
             "`StockAnalysisAgent` subagent, OR an `[ERROR] analyze_stock "
             "tool failed: ...` string on `ToolExecutionError`."
         ),
-    },
-    "run_deepresearch": {
-        "output": (
+    ),
+    _ToolSpec(
+        "run_deepresearch",
+        (
             "`str` — verbatim Markdown report produced by the embedded "
             "`DeepResearchAgent` subagent, OR an `[ERROR] deepresearch "
             "tool failed: ...` string on `ToolExecutionError`."
         ),
-    },
-}
+    ),
+)
 
 
 #: Parameter type names that ``Pydantic v2`` emits in JSON-schema
@@ -291,47 +310,33 @@ def _extract_inputs(tool_obj: BaseTool) -> list[ToolParamSpec]:
 def _output_for(name: str) -> str:
     """Return the hand-curated output spec for tool ``name``.
 
-    Tools missing from :data:`_TOOL_OUTPUTS` get a fallback placeholder
-    so the catalog still renders — operators should add the entry.
+    Tools missing from :data:`_TOOL_SPECS` get a fallback placeholder so
+    the catalog still renders — operators should add the entry.
     """
-    spec = _TOOL_OUTPUTS.get(name)
-    if spec is None:
-        return (
-            "_(no output description registered — add a `_TOOL_OUTPUTS` "
-            f"entry for `{name}` in `tools/registry.py`)_"
-        )
-    return spec["output"]
+    for spec in _TOOL_SPECS:
+        if spec.name == name:
+            return spec.output
+    return (
+        "_(no output description registered — add a `_ToolSpec` "
+        f"entry for `{name}` in `tools/registry.py`)_"
+    )
 
 
 def list_tools() -> list[BaseTool]:
     """Return every self-built ``@tool`` exposed to the LLM catalog.
 
-    The list is ordered alphabetically by tool name for stable
-    rendering. Adding a new tool requires appending here **and** to
-    :data:`_TOOL_OUTPUTS`.
-
-    :mod:`stock_analysis_agent.tools.strategy` is imported lazily
-    here because it depends on
-    :class:`stock_analysis_agent.agent.stock_analysis.StockAnalysisAgent`,
-    and importing it eagerly breaks the package-level import order
-    (``stock_analysis_agent.__init__`` -> ``agent.deepresearch`` ->
-    ``tools.web_search`` would re-enter this module).
+    Derives from :data:`_TOOL_SPECS`, ordered alphabetically by tool name
+    for stable rendering. Strategy tools are resolved lazily via
+    :func:`_strategy_tool` because importing
+    :mod:`stock_analysis_agent.tools.strategy` eagerly re-enters this
+    package during the import chain.
     """
-    from stock_analysis_agent.tools.strategy import (  # noqa: PLC0415
-        load_strategy,
-        run_analyze_stock,
-        run_deepresearch,
-    )
+    return sorted((_resolve_tool(spec) for spec in _TOOL_SPECS), key=lambda t: t.name)
 
-    all_tools: list[BaseTool] = [
-        load_skill,
-        load_strategy,
-        read_file,
-        run_analyze_stock,
-        run_command,
-        run_deepresearch,
-    ]
-    return sorted(all_tools, key=lambda t: t.name)
+
+def _resolve_tool(spec: _ToolSpec) -> BaseTool:
+    """Return the ``@tool`` object for ``spec`` (eager or lazy)."""
+    return spec.tool if spec.tool is not None else _strategy_tool(spec.name)
 
 
 def get_tool_index(names: list[str] | None = None) -> list[ToolIndexEntry]:
@@ -339,7 +344,7 @@ def get_tool_index(names: list[str] | None = None) -> list[ToolIndexEntry]:
 
     For each tool returned by :func:`list_tools`, introspect the
     ``args_schema`` (Pydantic model) for input rows and look up the
-    hand-curated :class:`ToolOutputSpec` for the return shape.
+    hand-curated :data:`_TOOL_SPECS` entry for the return shape.
 
     Args:
         names: Optional allowlist of tool names. When provided, only
@@ -426,9 +431,7 @@ def format_tool_index_markdown(index: list[ToolIndexEntry]) -> str:
 
 __all__ = [
     "ToolIndexEntry",
-    "ToolOutputSpec",
     "ToolParamSpec",
-    "_TOOL_OUTPUTS",
     "format_tool_index_markdown",
     "get_tool_index",
     "list_tools",

@@ -21,6 +21,7 @@ from stock_analysis_agent.agent.strategy_match_schema import (
 from stock_analysis_agent.script.evaluate_strategy import (
     _extract_feishu_doc_url,
     _publish_to_feishu,
+    render_local_markdown,
 )
 
 
@@ -152,3 +153,20 @@ class TestPublishToFeishu:
         # local-markdown fallback instead of logging a bogus URL.
         self._patch_lark_cli(monkeypatch, stdout="")
         assert _publish_to_feishu(_make_report()) is None
+
+
+class TestRenderLocalMarkdown:
+    def test_renders_report_link_when_url_present(self) -> None:
+        report = _make_report()
+        report.data_sources.stock_analysis_url = "https://x.feishu.cn/docx/doxcnLINK"
+        md = render_local_markdown(report, "2026-08-29")
+        assert "🔗 完整报告" in md
+        assert (
+            "[https://x.feishu.cn/docx/doxcnLINK](https://x.feishu.cn/docx/doxcnLINK)"
+            in md
+        )
+
+    def test_omits_report_link_when_url_absent(self) -> None:
+        report = _make_report()
+        md = render_local_markdown(report, "2026-08-29")
+        assert "🔗 完整报告" not in md

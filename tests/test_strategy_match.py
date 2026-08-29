@@ -319,22 +319,6 @@ class TestPublishToFeishu:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def _restore_subagent_shell_flag():
-    """Snapshot/restore the ``tools.strategy`` sub-agent shell flag.
-
-    ``StrategyMatchAgent.__init__`` writes the module-level provider
-    read by ``run_analyze_stock``; without restoration a test that
-    constructs an agent with ``include_shell_tool=True`` would leak
-    state into later test modules.
-    """
-    import stock_analysis_agent.tools.strategy as strategy_tools
-
-    original = strategy_tools._subagent_include_shell_tool
-    yield
-    strategy_tools._subagent_include_shell_tool = original
-
-
 class TestStrategyMatchAgent:
     def test_rejects_empty_system_prompt(self) -> None:
         with pytest.raises(ValueError, match="system_prompt"):
@@ -372,26 +356,6 @@ class TestStrategyMatchAgent:
     def test_thinking_budget_default_is_8192(self) -> None:
         agent = StrategyMatchAgent(system_prompt="hello")
         assert agent.thinking_budget_tokens == 8192
-
-    def test_shell_flag_propagates_to_subagent_provider_when_enabled(self) -> None:
-        """``include_shell_tool=True`` must reach the module-level flag that
-        ``run_analyze_stock`` reads — the sub-agent's stock-analysis
-        workflow needs ``run_command`` to execute the mx-* skill scripts.
-        """
-        import stock_analysis_agent.tools.strategy as strategy_tools
-
-        StrategyMatchAgent(system_prompt="hello", include_shell_tool=True)
-        assert strategy_tools._subagent_include_shell_tool is True
-
-    def test_shell_flag_propagates_to_subagent_provider_by_default(self) -> None:
-        """The default constructor resets the provider to ``False`` so a
-        shell-enabled agent constructed earlier cannot leak its flag.
-        """
-        import stock_analysis_agent.tools.strategy as strategy_tools
-
-        strategy_tools._subagent_include_shell_tool = True
-        StrategyMatchAgent(system_prompt="hello")
-        assert strategy_tools._subagent_include_shell_tool is False
 
 
 class TestRunFeishuOnlyDegradesToLocal:

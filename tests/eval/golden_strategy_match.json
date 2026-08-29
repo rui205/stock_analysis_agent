@@ -1,0 +1,12 @@
+[
+  {
+    "symbol": "600887.SH",
+    "strategy": "value-investing",
+    "expected": {
+      "overall_fit": "buy",
+      "fit_score_min": 7,
+      "fit_score_max": 9,
+      "must_mention": ["ROE", "股息率", "PE-TTM", "资产负债率"]
+    }
+  }
+]

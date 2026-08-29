@@ -84,8 +84,8 @@ agent 自己从报告里捞需要的章节(verdict / score / 主要风险等)喂
 ### Step 5. 输出
 
 **严格按 StrategyMatchReport schema 输出 JSON**,不附加解释。schema 现含
-`data_sources`(stock_analysis / deepresearch 两个来源摘要)与
-`judgment_rationale`(判断理论)两个新字段。LLM 输出后由
+`data_sources`(stock_analysis / deepresearch 两个来源摘要 + `stock_analysis_url`
+子 agent 报告链接)与 `judgment_rationale`(判断理论)两个新字段。LLM 输出后由
 `script.evaluate_strategy.run` 校验 + 渲染。
 
 ## Output delivery (--delivery 决定)
@@ -117,6 +117,8 @@ agent 自己从报告里捞需要的章节(verdict / score / 主要风险等)喂
 ### 来自 stock_analysis
 {data_sources.stock_analysis}
 
+🔗 完整报告: {data_sources.stock_analysis_url}(为空则省略此行)
+
 ### 来自 deepresearch
 {data_sources.deepresearch}(未调用则写"未调用 deepresearch")
 
@@ -140,7 +142,7 @@ agent 自己从报告里捞需要的章节(verdict / score / 主要风险等)喂
 6. **判断理论** — `judgment_rationale` 段落
 7. **行动建议** — action_recommendation 段落
 8. **数据声明** — 数据源列表 + 免责声明
-9. (可选)**完整报告链接** — 如果 subagent 已发布飞书,这里附链接
+9. (可选)**完整报告链接** — 来自 `data_sources.stock_analysis_url`;如果 subagent 已发布飞书,这里附链接
 
 lark-cli 命令细节、`lark-cli docs +create` / `+update` 选择、`<callout>` /
 `<h1>` 等 XML 标签规范,均在 `lark-doc` skill 里 — **先** `load_skill("lark-doc")`。

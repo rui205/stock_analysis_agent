@@ -27,6 +27,23 @@ from stock_analysis_agent.tools.strategy import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_subagent_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Point the sub-agent report cache at a per-test tmp dir.
+
+    Prevents cross-test cache hits and keeps tests from writing to the
+    user's real ``~/.cache``.
+    """
+    import stock_analysis_agent.tools.strategy as mod
+    from stock_analysis_agent.memory.file_cache import _FileCache
+
+    monkeypatch.setattr(
+        mod, "_subagent_cache", _FileCache(tmp_path, ttl_seconds=60.0)
+    )
+
+
 class TestListStrategyNames:
     def test_returns_alphabetical_stems(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         (tmp_path / "zeta.md").write_text("---\nname: z\n---\n", encoding="utf-8")
@@ -126,7 +143,7 @@ class TestRunAnalyzeStockTool:
         assert out == md_streamed
         fake_cls.assert_called_once()
         kwargs = fake_cls.call_args.kwargs
-        assert kwargs["include_shell_tool"] is False
+        assert kwargs["include_shell_tool"] is True
 
     def test_tool_failure_returns_error_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from stock_analysis_agent.agent.exceptions import ToolExecutionError
@@ -157,53 +174,26 @@ class TestRunAnalyzeStockTool:
         assert out.startswith("raw")
 
 
-class TestRunAnalyzeStockShellPropagation:
-    """The embedded sub-agent must inherit the orchestrator's shell opt-in.
+class TestRunAnalyzeStockShellDefault:
+    """The embedded sub-agent always runs with ``run_command``.
 
-    Without ``run_command`` the sub-agent cannot execute the mx-* skill
-    scripts its ``stock-analysis`` workflow depends on and degrades to
-    an LLM-knowledge-only report — the root cause of the "关键数据缺失"
-    strategy-match verdicts.
+    Its ``stock-analysis`` workflow needs shell access to execute the
+    mx-* skill scripts and publish the report to Feishu — the sub-agent
+    no longer inherits the orchestrator's opt-in flag.
     """
 
-    def _run_with_fake_subagent(
-        self, monkeypatch: pytest.MonkeyPatch, shell_enabled: bool
-    ) -> MagicMock:
-        """Invoke the tool with a stubbed sub-agent; return the class mock."""
+    def test_subagent_runs_with_shell_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         import stock_analysis_agent.tools.strategy as mod
 
         fake_sub = MagicMock()
         fake_sub.stream.return_value = iter([])
         fake_cls = MagicMock(return_value=fake_sub)
         monkeypatch.setattr(mod, "StockAnalysisAgent", fake_cls)
-        monkeypatch.setattr(mod, "_subagent_include_shell_tool", shell_enabled)
         run_analyze_stock.invoke({"symbol": "06049.HK"})
         fake_cls.assert_called_once()
-        return fake_cls
-
-    def test_subagent_gets_shell_tool_when_enabled(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        fake_cls = self._run_with_fake_subagent(monkeypatch, shell_enabled=True)
         assert fake_cls.call_args.kwargs["include_shell_tool"] is True
-
-    def test_subagent_shell_tool_defaults_to_false(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        fake_cls = self._run_with_fake_subagent(monkeypatch, shell_enabled=False)
-        assert fake_cls.call_args.kwargs["include_shell_tool"] is False
-
-    def test_setter_toggles_module_flag(self) -> None:
-        import stock_analysis_agent.tools.strategy as mod
-
-        original = mod._subagent_include_shell_tool
-        try:
-            mod.set_subagent_include_shell_tool(True)
-            assert mod._subagent_include_shell_tool is True
-            mod.set_subagent_include_shell_tool(False)
-            assert mod._subagent_include_shell_tool is False
-        finally:
-            mod._subagent_include_shell_tool = original
 
 
 class TestRunAnalyzeStockRecursionBudget:
@@ -290,7 +280,7 @@ class TestRunDeepResearchTool:
         kwargs = fake_cls.call_args.kwargs
         assert kwargs["symbol"] == "600519.SH"
         assert kwargs["dimensions"] == ["盈利质量-ROE"]
-        assert kwargs["include_shell_tool"] is False
+        assert kwargs["include_shell_tool"] is True
         assert kwargs["recursion_limit"] == 100
 
     def test_tool_failure_returns_error_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -316,24 +306,67 @@ class TestRunDeepResearchTool:
         assert "deepresearch" in out
 
 
-class TestRunDeepResearchShellPropagation:
-    def _run_with_fake_subagent(self, monkeypatch: pytest.MonkeyPatch, shell_enabled: bool) -> MagicMock:
+class TestRunDeepResearchShellDefault:
+    """The embedded deep-research sub-agent always runs with ``run_command``."""
+
+    def test_subagent_runs_with_shell_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import stock_analysis_agent.agent.deepresearch as dr
-        import stock_analysis_agent.tools.strategy as mod
 
         fake_sub = MagicMock()
         fake_sub.stream.return_value = iter([])
         fake_cls = MagicMock(return_value=fake_sub)
         monkeypatch.setattr(dr, "DeepResearchAgent", fake_cls)
-        monkeypatch.setattr(mod, "_subagent_include_shell_tool", shell_enabled)
         run_deepresearch.invoke({"symbol": "06049.HK", "dimensions": ["基本面"]})
         fake_cls.assert_called_once()
-        return fake_cls
-
-    def test_subagent_gets_shell_tool_when_enabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        fake_cls = self._run_with_fake_subagent(monkeypatch, shell_enabled=True)
         assert fake_cls.call_args.kwargs["include_shell_tool"] is True
 
-    def test_subagent_shell_tool_defaults_to_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        fake_cls = self._run_with_fake_subagent(monkeypatch, shell_enabled=False)
-        assert fake_cls.call_args.kwargs["include_shell_tool"] is False
+
+# ---------------------------------------------------------------------------
+# sub-agent report cache
+# ---------------------------------------------------------------------------
+
+
+def test_cache_query_includes_shell_and_dimensions() -> None:
+    import stock_analysis_agent.tools.strategy as st
+
+    assert st._cache_query("600887.SH", dimensions=None, shell=False) == "False|600887.SH"
+    assert (
+        st._cache_query("600887.SH", dimensions=("基本面", "财务"), shell=True)
+        == "True|600887.SH|基本面、财务"
+    )
+
+
+def test_run_analyze_stock_returns_cached_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cached sub-agent report short-circuits the LLM run entirely."""
+    import stock_analysis_agent.tools.strategy as st
+
+    query = st._cache_query("600887.SH", dimensions=None, shell=True)
+    st._subagent_cache.set(site="analyze_stock", query=query, text="cached report")
+
+    class _ShouldNotRun:
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("sub-agent must not be constructed on cache hit")
+
+    monkeypatch.setattr(st, "StockAnalysisAgent", _ShouldNotRun)
+    assert run_analyze_stock.invoke({"symbol": "600887.SH"}) == "cached report"
+
+
+def test_run_deepresearch_returns_cached_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """deepresearch reports are cached too, keyed by symbol + dimensions."""
+    import stock_analysis_agent.agent.deepresearch as dr
+    import stock_analysis_agent.tools.strategy as st
+
+    query = st._cache_query("600887.SH", dimensions=("基本面",), shell=True)
+    st._subagent_cache.set(site="deepresearch", query=query, text="cached deepresearch")
+
+    class _ShouldNotRun:
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("sub-agent must not be constructed on cache hit")
+
+    monkeypatch.setattr(dr, "DeepResearchAgent", _ShouldNotRun)
+    out = run_deepresearch.invoke({"symbol": "600887.SH", "dimensions": ["基本面"]})
+    assert out == "cached deepresearch"

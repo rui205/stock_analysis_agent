@@ -32,7 +32,6 @@ from stock_analysis_agent.tools.strategy import (
     load_strategy,
     run_analyze_stock,
     run_deepresearch,
-    set_subagent_include_shell_tool,
 )
 
 
@@ -56,10 +55,10 @@ class StrategyMatchAgent(BaseAgent):
             already substituted).
         include_shell_tool: When ``True``, also expose ``run_command``
             (e.g. for invoking ``lark-cli`` to publish to Feishu).
-            The flag also propagates to the embedded
-            ``run_analyze_stock`` sub-agent so its ``stock-analysis``
-            workflow can execute the mx-* skill data scripts — without
-            it the sub-agent can only emit a degraded report.
+            This flag only affects this orchestrator's own tool set —
+            the embedded ``run_analyze_stock`` sub-agent always runs
+            with ``run_command`` so it can execute the mx-* skill data
+            scripts and publish its report.
         recursion_limit: LangGraph budget. The typical run touches
             ``load_strategy`` + ``run_analyze_stock`` + 2-3 reasoning
             rounds + the final answer — ~15-20 graph nodes total.
@@ -85,13 +84,6 @@ class StrategyMatchAgent(BaseAgent):
             raise ValueError("system_prompt cannot be empty")
 
         self._include_shell_tool = include_shell_tool
-
-        # Provider wiring (mirrors ``tools.web_search``): the embedded
-        # ``run_analyze_stock`` sub-agent reads this flag at call time
-        # to inherit our shell opt-in. Without ``run_command`` the
-        # bundled stock-analysis workflow cannot execute its mx-* skill
-        # scripts and degrades to an LLM-knowledge-only report.
-        set_subagent_include_shell_tool(include_shell_tool)
 
         # Orchestration layer: strategy + sub-agent + skill workflow
         # discovery + opt-in shell. No file/dir primitives — those are

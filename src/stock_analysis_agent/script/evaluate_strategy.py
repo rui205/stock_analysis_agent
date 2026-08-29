@@ -202,6 +202,13 @@ def render_local_markdown(report: StrategyMatchReport, now_iso: str) -> str:
         for i, m in enumerate(report.criterion_matches, 1)
     )
     deepresearch = report.data_sources.deepresearch or "未调用 deepresearch(基本面数据已足够)"
+    stock_analysis_block = report.data_sources.stock_analysis
+    if report.data_sources.stock_analysis_url:
+        stock_analysis_block += (
+            f"\n\n🔗 完整报告: "
+            f"[{report.data_sources.stock_analysis_url}]"
+            f"({report.data_sources.stock_analysis_url})"
+        )
     return (
         f"# [{report.symbol}] 策略匹配报告 · {now_iso}\n\n"
         f"> 策略: **{report.strategy_name}** v{report.strategy_version}\n"
@@ -212,7 +219,7 @@ def render_local_markdown(report: StrategyMatchReport, now_iso: str) -> str:
         f"| # | 原则 | 评级 | 证据 | 推理 |\n"
         f"|---|------|------|------|------|\n{rows}\n\n"
         f"## 数据来源\n"
-        f"### 来自 stock_analysis\n{report.data_sources.stock_analysis}\n\n"
+        f"### 来自 stock_analysis\n{stock_analysis_block}\n\n"
         f"### 来自 deepresearch\n{deepresearch}\n\n"
         f"## 判断理论\n{report.judgment_rationale}\n\n"
         f"## 行动建议\n{report.action_recommendation}\n\n"
@@ -335,10 +342,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--include-shell-tool", dest="include_shell_tool", action="store_true", default=False,
         help=(
-            "Expose run_command so the agent can call lark-cli directly. The "
-            "flag also propagates to the analyze-stock subagent so its "
-            "stock-analysis workflow can execute the mx-* skill data scripts "
-            "(without it the subagent emits a degraded report)."
+            "Expose run_command so the orchestrator agent can call lark-cli "
+            "directly. This only affects the orchestrator: the analyze-stock "
+            "sub-agent always runs with run_command so it can execute the "
+            "mx-* skill data scripts and publish its report."
         ),
     )
     parser.add_argument(
@@ -356,10 +363,17 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run(args: argparse.Namespace) -> int:
-    """Top-level orchestration. Returns the process exit code."""
-    _validate_strategy(args.strategy)
+def _run_agent_and_parse(args: argparse.Namespace) -> StrategyMatchReport:
+    """Run the strategy-match agent and return its parsed report.
 
+    Extracted from :func:`run` so an evaluation harness can drive the agent
+    and assert on the structured :class:`StrategyMatchReport` without the
+    CLI's file / Feishu side effects.
+
+    Raises:
+        ToolExecutionError: The agent's tool retries were exhausted.
+        ValueError: The agent output failed ``StrategyMatchReport`` validation.
+    """
     system_prompt = _load_system_prompt(include_shell_tool=args.include_shell_tool)
     agent = StrategyMatchAgent(
         system_prompt=system_prompt,
@@ -370,8 +384,21 @@ def run(args: argparse.Namespace) -> int:
     messages: list[BaseMessage] = [HumanMessage(
         content=f"按 system prompt 的 schema 给出 {args.symbol} 在 {args.strategy} 策略下的匹配报告。"
     )]
+    last_text = collect_final_text(agent.stream(messages))
     try:
-        last_text = collect_final_text(agent.stream(messages))
+        json_str = _extract_json_object(_strip_code_fence(last_text))
+        return StrategyMatchReport.model_validate_json(json_str)
+    except ValueError:
+        logger.debug("raw output: %s", last_text[:2000])
+        raise
+
+
+def run(args: argparse.Namespace) -> int:
+    """Top-level orchestration. Returns the process exit code."""
+    _validate_strategy(args.strategy)
+
+    try:
+        report = _run_agent_and_parse(args)
     except ToolExecutionError as e:
         # The middleware wraps the original exception via ``raise ... from
         # exc``; surface its type so failures with empty/ambiguous messages
@@ -380,13 +407,8 @@ def run(args: argparse.Namespace) -> int:
         suffix = f" (cause: {type(cause).__name__})" if cause is not None else ""
         logger.error("agent tools failed: %s%s", e, suffix)
         return EXIT_TOOL
-
-    try:
-        json_str = _extract_json_object(_strip_code_fence(last_text))
-        report = StrategyMatchReport.model_validate_json(json_str)
     except ValueError as e:
         logger.error("agent output failed StrategyMatchReport validation: %s", e)
-        logger.debug("raw output: %s", last_text[:2000])
         return EXIT_PARSE
 
     out_dir = args.output_dir or output_dir()

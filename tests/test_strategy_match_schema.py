@@ -72,6 +72,10 @@ class TestDataSourceBreakdown:
         ds = DataSourceBreakdown(stock_analysis="x")
         assert ds.deepresearch == ""
 
+    def test_stock_analysis_url_defaults_to_empty(self) -> None:
+        ds = DataSourceBreakdown(stock_analysis="x")
+        assert ds.stock_analysis_url == ""
+
     def test_rejects_empty_stock_analysis(self) -> None:
         with pytest.raises(ValidationError):
             DataSourceBreakdown(stock_analysis="")
@@ -149,6 +153,14 @@ class TestOverlongFields:
     def test_rejects_overlong_stock_analysis(self) -> None:
         with pytest.raises(ValidationError):
             _with(data_sources=DataSourceBreakdown(stock_analysis="x" * 2001))
+
+    def test_rejects_overlong_stock_analysis_url(self) -> None:
+        with pytest.raises(ValidationError):
+            _with(
+                data_sources=DataSourceBreakdown(
+                    stock_analysis="x", stock_analysis_url="x" * 501
+                )
+            )
 
     def test_rejects_overlong_deepresearch(self) -> None:
         with pytest.raises(ValidationError):

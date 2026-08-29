@@ -38,11 +38,16 @@ class DataSourceBreakdown(BaseModel):
     Attributes:
         stock_analysis: Key info from the stock_analysis subagent
             (verdict / score / key risks, etc.).
+        stock_analysis_url: The Feishu doc URL the stock_analysis
+            subagent published (the ``🔗`` link it returned verbatim);
+            empty string when the sub-agent did not publish (e.g.
+            lark-cli not authenticated).
         deepresearch: Supplementary info from the deepresearch subagent;
             empty string when deepresearch was not called.
     """
 
     stock_analysis: str = Field(min_length=1, max_length=2000)
+    stock_analysis_url: str = Field(default="", max_length=500)
     deepresearch: str = Field(default="", max_length=2000)
 
 

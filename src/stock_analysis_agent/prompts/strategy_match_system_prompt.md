@@ -69,6 +69,7 @@ description: 根据用户自定义的选股策略,评估个股是否符合策略
   ],
   "data_sources": {
     "stock_analysis": "来自 stock_analysis subagent 的关键信息摘要(verdict+score+主要风险等)",
+    "stock_analysis_url": "run_analyze_stock 返回报告中 🔗 后的飞书文档 URL,原样复制;子 agent 未发布飞书时为空字符串",
     "deepresearch": "来自 deepresearch 的补充信息摘要;未调用时为空字符串"
   },
   "judgment_rationale": "判断理论:为什么给出这个 overall_fit + fit_score 的完整推理链",

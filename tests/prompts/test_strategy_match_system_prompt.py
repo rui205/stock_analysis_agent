@@ -45,3 +45,8 @@ def test_declares_data_sources_and_judgment_rationale_fields() -> None:
     text = _read_prompt()
     assert '"data_sources"' in text, "missing data_sources in JSON example"
     assert '"judgment_rationale"' in text, "missing judgment_rationale in JSON example"
+
+
+def test_declares_stock_analysis_url_field() -> None:
+    text = _read_prompt()
+    assert '"stock_analysis_url"' in text, "missing stock_analysis_url in JSON example"

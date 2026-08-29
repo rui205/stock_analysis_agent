@@ -94,7 +94,7 @@ def _load_system_prompt(include_shell_tool: bool = False) -> str:
     * ``<!-- TOOL_INDEX -->`` — the @tool catalog, built by introspecting
       every self-built tool's ``args_schema`` Pydantic model plus a
       hand-curated return-shape entry from
-      :data:`tools.registry._TOOL_OUTPUTS`.
+      :data:`tools.registry._TOOL_SPECS`.
 
     The catalog is filtered to the **sub-agent's actual tool set**
     (:func:`_subagent_tool_names`) — same names, same order. The

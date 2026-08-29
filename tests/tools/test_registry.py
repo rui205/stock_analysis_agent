@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from stock_analysis_agent.tools.registry import (
     _extract_inputs,
-    _TOOL_OUTPUTS,
+    _TOOL_SPECS,
     format_tool_index_markdown,
     get_tool_index,
     list_tools,
@@ -34,9 +34,9 @@ class TestListTools:
     def test_list_tools_includes_every_self_built_tool(self) -> None:
         """The bundled @tools are all in the catalog.
 
-        Adding a new tool requires (a) appending it to ``list_tools``
-        and (b) adding a ``_TOOL_OUTPUTS`` entry — this assertion
-        catches the case where someone forgot (a).
+        Adding a new tool requires adding one ``_ToolSpec`` entry to
+        ``_TOOL_SPECS`` — this assertion catches the case where someone
+        forgot to register it.
 
         Note: ``get_stock_snapshot`` and ``web_search`` are being prepared
         for deletion and are intentionally absent from the catalog.
@@ -135,17 +135,17 @@ class TestExtractInputs:
 
 
 class TestOutputSpecs:
-    """Every registered tool has a matching ``_TOOL_OUTPUTS`` entry."""
+    """Every registered tool has a matching ``_ToolSpec`` entry."""
 
     @pytest.mark.parametrize("tool_name", [t.name for t in list_tools()])
     def test_tool_has_output_spec(self, tool_name: str) -> None:
         """No registered tool is missing its return-shape description."""
-        assert tool_name in _TOOL_OUTPUTS, (
-            f"tool {tool_name!r} has no _TOOL_OUTPUTS entry; "
+        specs_by_name = {s.name: s for s in _TOOL_SPECS}
+        assert tool_name in specs_by_name, (
+            f"tool {tool_name!r} has no _TOOL_SPECS entry; "
             "add one in tools/registry.py"
         )
-        spec = _TOOL_OUTPUTS[tool_name]
-        assert spec["output"], f"empty output spec for {tool_name!r}"
+        assert specs_by_name[tool_name].output, f"empty output spec for {tool_name!r}"
 
 
 # ---------------------------------------------------------------------------

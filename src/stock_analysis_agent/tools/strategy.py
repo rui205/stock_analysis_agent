@@ -18,12 +18,15 @@ the raw report and decides what to do with it.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from stock_analysis_agent.agent.stock_analysis import StockAnalysisAgent
 from stock_analysis_agent.agent.stream import collect_final_text
+from stock_analysis_agent.memory.file_cache import _FileCache
 from stock_analysis_agent.tools._paths import PACKAGE_ROOT
 
 # Resolved at import time — points at conf/strategies/. Tests may
@@ -36,30 +39,32 @@ _STRATEGIES_DIR = PACKAGE_ROOT / "conf" / "strategies"
 #: fields the schema binds to.
 _STRATEGY_FRONTMATTER_KEYS: frozenset[str] = frozenset({"name", "version", "description"})
 
-#: Whether the ``run_analyze_stock`` sub-agent gets the ``run_command``
-#: tool. Written by :class:`StrategyMatchAgent.__init__` (mirrors the
-#: module-singleton provider pattern in ``tools.web_search``); read by
-#: :func:`_run_subagent_and_collect` on every tool invocation. The
-#: bundled ``stock-analysis`` workflow executes its mx-* skill scripts
-#: via shell — without ``run_command`` the sub-agent can only emit a
-#: degraded, LLM-knowledge-only report. Default ``False`` keeps the
-#: standalone tool behaviour unchanged.
-_subagent_include_shell_tool: bool = False
+#: On-disk cache for sub-agent reports, keyed by (site, query). Re-running
+#: the same symbol/dimensions within the TTL returns the previous report
+#: instead of re-fetching data and re-paying LLM tokens. Cache misses and
+#: write failures degrade silently — caching is an optimization, not a
+#: correctness layer.
+_SUBAGENT_CACHE_DIR = Path("~/.cache/stock-analysis-agent/subagent-reports").expanduser()
+_SUBAGENT_CACHE_TTL: float = 3600.0  # 1 hour
+
+_subagent_cache = _FileCache(_SUBAGENT_CACHE_DIR, ttl_seconds=_SUBAGENT_CACHE_TTL)
 
 
-def set_subagent_include_shell_tool(enabled: bool) -> None:
-    """Set whether the ``run_analyze_stock`` sub-agent gets ``run_command``.
+def _cache_query(
+    symbol: str,
+    *,
+    dimensions: tuple[str, ...] | None,
+    shell: bool,
+) -> str:
+    """Build the stable cache key for a sub-agent run.
 
-    Called by :class:`StrategyMatchAgent.__init__` so the embedded
-    sub-agent inherits the orchestrator's shell opt-in.
-
-    Args:
-        enabled: ``True`` to wire ``run_command`` into the sub-agent
-            (and advertise it in its system-prompt tool catalog);
-            ``False`` to run the sub-agent without shell access.
+    The shell flag is part of the key because it changes the sub-agent's
+    output contract (shell-enabled runs execute the mx-* data scripts;
+    without it the report degrades to LLM-knowledge-only).
     """
-    global _subagent_include_shell_tool
-    _subagent_include_shell_tool = enabled
+    if dimensions is None:
+        return f"{shell}|{symbol}"
+    return f"{shell}|{symbol}|{'、'.join(dimensions)}"
 
 
 def _list_strategy_names() -> tuple[str, ...]:
@@ -149,13 +154,17 @@ def _run_subagent_and_collect(symbol: str) -> str:
     """
     from stock_analysis_agent.script.analyze_stock import _load_system_prompt
 
-    # The sub-agent inherits the orchestrator's shell opt-in (written
-    # by ``StrategyMatchAgent.__init__``): the bundled stock-analysis
-    # workflow runs its mx-* skill scripts via ``run_command``, and
-    # without it the sub-agent degrades to an LLM-knowledge-only
-    # report. The prompt catalog follows the same flag so it never
-    # advertises a tool the sub-agent can't actually call.
-    shell_enabled = _subagent_include_shell_tool
+    # The sub-agent always runs with ``run_command``: the bundled
+    # stock-analysis workflow executes its mx-* skill scripts via shell
+    # and publishes the report to Feishu (lark-cli), both of which
+    # require shell access — without it the sub-agent degrades to an
+    # LLM-knowledge-only report with no published URL to thread back.
+    shell_enabled = True
+    query = _cache_query(symbol, dimensions=None, shell=shell_enabled)
+    cached = _subagent_cache.get(site="analyze_stock", query=query)
+    if cached is not None:
+        return cached
+
     system_prompt = _load_system_prompt(include_shell_tool=shell_enabled)
     sub = StockAnalysisAgent(
         system_prompt=system_prompt,
@@ -169,7 +178,12 @@ def _run_subagent_and_collect(symbol: str) -> str:
         recursion_limit=100,
     )
     events = sub.stream([HumanMessage(f"按 system prompt 的 schema 给出 {symbol} 的分析报告。")])
-    return collect_final_text(events)
+    report = collect_final_text(events)
+    try:
+        _subagent_cache.set(site="analyze_stock", query=query, text=report)
+    except OSError:
+        pass  # cache write failure does not fail the sub-agent run
+    return report
 
 
 class RunAnalyzeStockInput(BaseModel):
@@ -233,13 +247,20 @@ def _run_deepresearch_and_collect(symbol: str, dimensions: list[str]) -> str:
     """
     from stock_analysis_agent.agent.deepresearch import DeepResearchAgent
 
+    shell_enabled = True
+    dims = tuple(dimensions)
+    query = _cache_query(symbol, dimensions=dims, shell=shell_enabled)
+    cached = _subagent_cache.get(site="deepresearch", query=query)
+    if cached is not None:
+        return cached
+
     sub = DeepResearchAgent(
         symbol=symbol,
         dimensions=dimensions,
         # Inherit the orchestrator's shell opt-in: the mx-* skill data
         # scripts need ``run_command``; without it the sub-agent can only
         # fall back to ``web_search``.
-        include_shell_tool=_subagent_include_shell_tool,
+        include_shell_tool=shell_enabled,
         # DeepResearch's default recursion_limit is None (LangGraph 25) —
         # too small for a multi-skill deep-research run.
         recursion_limit=100,
@@ -247,7 +268,12 @@ def _run_deepresearch_and_collect(symbol: str, dimensions: list[str]) -> str:
     events = sub.stream(
         [HumanMessage(f"研究 {symbol} 的以下维度并产出带证据链的报告:{'、'.join(dimensions)}")]
     )
-    return collect_final_text(events)
+    report = collect_final_text(events)
+    try:
+        _subagent_cache.set(site="deepresearch", query=query, text=report)
+    except OSError:
+        pass  # cache write failure does not fail the sub-agent run
+    return report
 
 
 class RunDeepResearchInput(BaseModel):
@@ -305,5 +331,4 @@ __all__ = [
     "load_strategy",
     "run_analyze_stock",
     "run_deepresearch",
-    "set_subagent_include_shell_tool",
 ]

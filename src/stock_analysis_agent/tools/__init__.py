@@ -15,7 +15,6 @@ Public API:
     load_strategy         — @tool wrapper for reading a strategy .md from conf/strategies/
     run_analyze_stock     — @tool wrapper that runs the StockAnalysisAgent subagent and returns its Markdown report verbatim
     run_deepresearch      — @tool wrapper that runs the DeepResearchAgent subagent and returns its Markdown report verbatim
-    set_subagent_include_shell_tool — propagate the orchestrator's shell opt-in to the run_analyze_stock subagent
     _list_strategy_names  — alphabetical list of strategy file stems under conf/strategies/
     _parse_strategy_frontmatter — extract simple key: value pairs from a strategy frontmatter block
     LoadStrategyInput     — input schema for load_strategy
@@ -27,7 +26,6 @@ from __future__ import annotations
 from stock_analysis_agent.tools.read_file import _read_file, read_file
 from stock_analysis_agent.tools.registry import (
     ToolIndexEntry,
-    ToolOutputSpec,
     ToolParamSpec,
     format_tool_index_markdown,
     get_tool_index,
@@ -63,13 +61,11 @@ _STRATEGY_LAZY_NAMES: frozenset[str] = frozenset({
     "load_strategy",
     "run_analyze_stock",
     "run_deepresearch",
-    "set_subagent_include_shell_tool",
 })
 
 __all__ = [
     "SkillIndexEntry",
     "ToolIndexEntry",
-    "ToolOutputSpec",
     "ToolParamSpec",
     "_read_file",
     "_read_skill",
@@ -92,7 +88,6 @@ __all__ = [
     "load_strategy",
     "run_analyze_stock",
     "run_deepresearch",
-    "set_subagent_include_shell_tool",
 ]
 
 def __getattr__(name: str) -> object:
