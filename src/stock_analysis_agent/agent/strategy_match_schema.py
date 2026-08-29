@@ -44,11 +44,15 @@ class DataSourceBreakdown(BaseModel):
             lark-cli not authenticated).
         deepresearch: Supplementary info from the deepresearch subagent;
             empty string when deepresearch was not called.
+        technical_capital: Supplementary info from the technical +
+            capital-flow subagent (trend / key levels / timing signals);
+            empty string when ``run_technical_capital`` was not called.
     """
 
     stock_analysis: str = Field(min_length=1, max_length=2000)
     stock_analysis_url: str = Field(default="", max_length=500)
     deepresearch: str = Field(default="", max_length=2000)
+    technical_capital: str = Field(default="", max_length=2000)
 
 
 class StrategyMatchReport(BaseModel):

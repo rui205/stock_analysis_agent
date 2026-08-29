@@ -32,6 +32,7 @@ from stock_analysis_agent.tools.strategy import (
     load_strategy,
     run_analyze_stock,
     run_deepresearch,
+    run_technical_capital,
 )
 
 
@@ -39,7 +40,8 @@ class StrategyMatchAgent(BaseAgent):
     """LLM-driven strategy-match agent (orchestrator).
 
     Bundles ``load_strategy``, ``run_analyze_stock``, ``run_deepresearch``,
-    ``load_skill``, and (opt-in) ``run_command``. The system prompt is **caller-supplied**
+    ``run_technical_capital``, ``load_skill``, and (opt-in) ``run_command``.
+    The system prompt is **caller-supplied**
     — pass ``system_prompt=`` to define the output contract.
 
     This class deliberately does NOT include ``read_file``: that is a
@@ -88,7 +90,13 @@ class StrategyMatchAgent(BaseAgent):
         # Orchestration layer: strategy + sub-agent + skill workflow
         # discovery + opt-in shell. No file/dir primitives — those are
         # the sub-agent's surface, not ours.
-        tools: list[Any] = [load_strategy, run_analyze_stock, run_deepresearch, load_skill]
+        tools: list[Any] = [
+            load_strategy,
+            run_analyze_stock,
+            run_deepresearch,
+            run_technical_capital,
+            load_skill,
+        ]
         if include_shell_tool:
             tools.append(run_command)
 

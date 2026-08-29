@@ -61,6 +61,15 @@ agent 自己从报告里捞需要的章节(verdict / score / 主要风险等)喂
    `judgment_rationale` 标注缺失维度。
 5. 绝不编造深研数据。
 
+### Step 2.6 技术面/资金面 → technical_capital 补充(条件触发)
+
+当策略原则涉及**技术信号**(趋势 / 动量 / 支撑阻力 / 均线)或**资金面条件**(主力流入 / 北向 / 换手 / 量能)时，`run_analyze_stock` 的基本面报告不覆盖这些字段，**不要用基本面数据硬凑**：
+
+1. 挑出涉及技术面/资金面的策略原则。
+2. 调 `run_technical_capital(symbol=...)`，等返回 Markdown 报告。
+3. 把技术面/资金面结论回填到对应 criterion 的 evidence / reasoning，摘要写进 `data_sources.technical_capital`。
+4. 数据缺失时按 Step 2.5 兜底或如实标注 `confidence=low`。
+
 ### Step 3. 逐条匹配
 
 针对策略中**所有可独立验证**的原则(忽略纯定性描述如"长期持有"),逐条生成一条
@@ -122,6 +131,9 @@ agent 自己从报告里捞需要的章节(verdict / score / 主要风险等)喂
 ### 来自 deepresearch
 {data_sources.deepresearch}(未调用则写"未调用 deepresearch")
 
+### 来自 technical_capital
+{data_sources.technical_capital}(未调用则写"未调用 technical_capital")
+
 ## 判断理论
 {judgment_rationale}
 
@@ -139,10 +151,11 @@ agent 自己从报告里捞需要的章节(verdict / score / 主要风险等)喂
 3. **逐条匹配** — 表格:原则 / 评级 / 证据 / 推理
 4. **数据来源 · stock_analysis** — 来自 `data_sources.stock_analysis`
 5. **数据来源 · deepresearch** — 来自 `data_sources.deepresearch`(未调用标注"未调用")
-6. **判断理论** — `judgment_rationale` 段落
-7. **行动建议** — action_recommendation 段落
-8. **数据声明** — 数据源列表 + 免责声明
-9. (可选)**完整报告链接** — 来自 `data_sources.stock_analysis_url`;如果 subagent 已发布飞书,这里附链接
+6. **数据来源 · technical_capital** — 来自 `data_sources.technical_capital`(未调用标注"未调用")
+7. **判断理论** — `judgment_rationale` 段落
+8. **行动建议** — action_recommendation 段落
+9. **数据声明** — 数据源列表 + 免责声明
+10. (可选)**完整报告链接** — 来自 `data_sources.stock_analysis_url`;如果 subagent 已发布飞书,这里附链接
 
 lark-cli 命令细节、`lark-cli docs +create` / `+update` 选择、`<callout>` /
 `<h1>` 等 XML 标签规范,均在 `lark-doc` skill 里 — **先** `load_skill("lark-doc")`。
@@ -174,3 +187,4 @@ lark-cli 命令细节、`lark-cli docs +create` / `+update` 选择、`<callout>`
 - **数据不足却强行给 fit/mismatch** → 先按 Step 2.5 调 `run_deepresearch` 补充,别硬凑
 - **deepresearch 调用超过 3 次** → 上限 3 次,超了就用已有信息给 `confidence=low`
 - **编造深研数据** → deepresearch 结果必须来自 `run_deepresearch` 返回的报告,不得臆造
+- **技术面/资金面原则用基本面数据硬凑** → 涉及趋势/均线/资金的原则先调 `run_technical_capital`,不要用估值/ROE 硬填

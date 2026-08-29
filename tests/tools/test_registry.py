@@ -49,6 +49,7 @@ class TestListTools:
             "load_strategy",
             "run_analyze_stock",
             "run_deepresearch",
+            "run_technical_capital",
         }
         assert expected.issubset(names), (
             f"missing tools: {expected - names}; "

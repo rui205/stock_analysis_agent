@@ -102,6 +102,8 @@ class TestRenderLocalMarkdown:
         assert "### 来自 stock_analysis" in md
         assert "### 来自 deepresearch" in md
         assert "未调用 deepresearch" in md
+        assert "### 来自 technical_capital" in md
+        assert "未调用 technical_capital" in md
         assert "## 判断理论" in md
 
     def test_escapes_pipe_and_newline_in_table_cells(self) -> None:
@@ -336,6 +338,7 @@ class TestStrategyMatchAgent:
         assert "load_strategy" in names
         assert "run_analyze_stock" in names
         assert "run_deepresearch" in names
+        assert "run_technical_capital" in names
         assert "load_skill" in names
         # Sub-agent's data-discovery surface must NOT leak here:
         assert "read_file" not in names

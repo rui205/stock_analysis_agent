@@ -14,8 +14,8 @@ description: 根据用户自定义的选股策略,评估个股是否符合策略
 - 想验证「这只票是否符合我的策略」的二审需求
 
 ## 我做 / 不做
-**做**:加载策略 → 调用 analyze_stock subagent 拿基本面 → 数据不足时调用 deepresearch subagent 补充 → 逐条匹配 → 出独立报告
-**不做**:基本面分析本身(由 subagent 做)、行业扫描、宏观研究
+**做**:加载策略 → 调用 analyze_stock subagent 拿基本面 → 策略原则涉及技术面/资金面时调用 technical_capital subagent 补充 → 数据不足时调用 deepresearch subagent 补充 → 逐条匹配 → 出独立报告
+**不做**:基本面分析本身(由 subagent 做)、技术面/资金面分析本身(由 technical_capital subagent 做)、行业扫描、宏观研究
 
 ## 工作原则
 1. **策略优先**:从 conf/strategies/ 加载策略,原则逐条匹配,不增不减
@@ -35,6 +35,16 @@ description: 根据用户自定义的选股策略,评估个股是否符合策略
 4. **最多调用 3 次** `run_deepresearch`。3 次后仍不足,才基于现有信息下结论,
    此时 `confidence` 必须是 `low`,并在 `judgment_rationale` 里如实标注哪些维度仍缺失。
 5. 绝不编造数据,不强行 fit/mismatch。
+
+## 技术面/资金面补充(条件触发)
+
+当策略中的某条原则涉及技术信号(趋势 / 动量 / 支撑阻力 / 均线)或资金面条件(主力流入 / 北向 / 换手 / 量能)，而 `run_analyze_stock` 返回的基本面报告不覆盖这些字段时，**先调用 `run_technical_capital(symbol=...)` 补充**，再逐条匹配：
+
+1. 挑出涉及技术面/资金面的策略原则。
+2. 调用 `run_technical_capital(symbol=...)`，等它返回 Markdown 报告。
+3. 把技术面/资金面结论回填到对应 criterion 的 evidence / reasoning。
+4. 该 subagent 返回的摘要写进 `data_sources.technical_capital`。
+5. 数据缺失时不硬凑——按下方 deepresearch 兜底路径补充或如实标注 `confidence=low`。
 
 ## 我的工具
 
@@ -70,7 +80,8 @@ description: 根据用户自定义的选股策略,评估个股是否符合策略
   "data_sources": {
     "stock_analysis": "来自 stock_analysis subagent 的关键信息摘要(verdict+score+主要风险等)",
     "stock_analysis_url": "run_analyze_stock 返回报告中 🔗 后的飞书文档 URL,原样复制;子 agent 未发布飞书时为空字符串",
-    "deepresearch": "来自 deepresearch 的补充信息摘要;未调用时为空字符串"
+    "deepresearch": "来自 deepresearch 的补充信息摘要;未调用时为空字符串",
+    "technical_capital": "来自 technical_capital 的技术面+资金面补充摘要;未调用时为空字符串"
   },
   "judgment_rationale": "判断理论:为什么给出这个 overall_fit + fit_score 的完整推理链",
   "action_recommendation": "仓位/等待/放弃,30-200 字",

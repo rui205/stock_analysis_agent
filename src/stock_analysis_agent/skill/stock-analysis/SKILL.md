@@ -5,7 +5,7 @@ description: Use when the user asks to analyze a single stock (个股 / 单只�
 
 # Stock Analysis Workflow
 
-Single-ticker deep dive: snapshot → valuation positioning → recent events → analyst views → verdict + risks. Output goes to 飞书云文档 (see `lark-doc`), not the chat.
+Single-ticker deep dive: macro backdrop → snapshot → valuation positioning → recent events → analyst views → verdict + risks. Output goes to 飞书云文档 (see `lark-doc`), not the chat.
 
 ## Inputs to collect
 
@@ -24,10 +24,31 @@ Single-ticker deep dive: snapshot → valuation positioning → recent events �
 | 未盈利 / 亏损公司 | 跳过 PE,改 PS / EV/EBITDA / PB |
 | ETF / 指数基金 | 跳过 Step 1 公司画像 + Step 5 个股估值,改"跟踪误差 + 折溢价 + 成分股 top10" |
 | 已持仓 (含成本) | Step 5 必须含**止损位 / 加仓位**,不只是"目标价" |
-| 宏观冲击期 (政策/加息) | 额外跑一次 `mx-macro-data` 拿宏观背景,并入风险章节 |
+| 宏观背景 | Step 0 常规跑一次 `mx-macro-data`,按行业针对性拉 2–3 个相关指标,写入「宏观背景」章节 |
 | `mx-finance-search` 大面积无结果 | 走降级路径:省略事件/机构观点章节,列出缺失项,报告顶部注明 |
 
 ## Procedure
+
+### Step 0. 宏观背景 (mx-macro-data)
+
+先判断标的业务与哪些宏观变量强相关,按行业针对性拉 **2–3 个**具体指标,不拉全量:
+
+| 行业/属性 | 相关宏观指标 |
+|-----------|-------------|
+| 消费 / 零售 | CPI、社零 |
+| 银行 / 金融 | 利率(LPR / 国债)、M2、社融 |
+| 制造 / 周期 | PMI、PPI |
+| 出口 / 外贸 | 汇率、出口额 |
+| 资源 / 有色 | 具体商品价格(黄金 / 铜 / 锂等) |
+| 地产 | 房贷利率、地产销售 |
+
+**调用**:`load_skill(name="mx-macro-data")` 拿规范后:
+
+```bash
+python3 {baseDir}/scripts/get_data.py --query "查询中国 CPI 同比、社会消费品零售总额同比"
+```
+
+> `mx-macro-data` 指标必须**具体**(禁止"中国经济""通胀情况"这类泛指),地域可用宏观表述(中国 / 美国 / 欧元区)。宏观结论并入 Step 5 的估值与风险判断,并写入「宏观背景」章节。
 
 ### Step 1. 基本面快照 (mx-finance-data)
 公司信息、实时行情、近 3 年核心财务 (营收 / 归母净利 / ROE / 毛利率 / 净利率 / 负债率 / FCF)、分红与回购历史。
@@ -63,6 +84,8 @@ python3 {baseDir}/scripts/get_data.py "<股票名> <代码> 最近60天券商研
 
 ### Step 5. 综合判断 (不调 skill)
 
+把 Step 0 的宏观背景作为估值(利率→贴现率)与风险(政策/需求)的输入。
+
 1. **合理估值区间**:
    - **相对估值法**:历史分位中位数 ± 同行均值给 PE/PB 区间 × EPS/BVPS = 价格区间
    - **DCF 简版** (仅适用盈利稳定的成熟公司):近 3 年平均 FCF、8-10% 永续增速、10% 折现率做敏感性
@@ -82,7 +105,7 @@ python3 {baseDir}/scripts/get_data.py "<股票名> <代码> 最近60天券商研
 
 ## Output contract
 
-完成 7 节分析后,**不**在会话内输出报告正文,改用 `lark-doc` 把全量报告发布到飞书云文档,会话内**只**返回链接 + 一句话摘要。
+完成 8 节分析后,**不**在会话内输出报告正文,改用 `lark-doc` 把全量报告发布到飞书云文档,会话内**只**返回链接 + 一句话摘要。
 
 ### 调用方式
 
@@ -101,15 +124,16 @@ lark-cli docs +create --api-version v2 \
 
 例:`[600519] 股票分析报告 · 2026-06-29`
 
-### 文档正文(7 节,XML 格式)
+### 文档正文(8 节,XML 格式)
 
 1. **执行摘要** — `<callout type="info">` + 表格:投资建议(decision_label + confidence) + 估值区间 + 目标价 + 当前价
 2. **公司画像** — `<h2>` + 段落:主营业务、行业地位、近期重要事件(每条带来源标注);"七段式渲染"按 `stock-snapshot-format` skill
-3. **多维评分** — 表格:4 维度(fundamental / technical / news_catalyst / peer_positioning)+ 加权总分
-4. **价位计划** — 表格 + 列表:current_price / entry_zone / add_zone / target_price / stop_loss / risk_reward_ratio / time_horizon
-5. **基本面 + 技术面分析** — `<h3>` + bullets:highlights、concerns 分点列,带数据来源
-6. **风险与行动方案** — 风险表格(type 6 选 1 + severity)+ 仓位建议 + review_triggers
-7. **数据声明与免责声明** — `<callout type="warning">`:数据源列表 + "本报告由 AI 生成,不构成投资建议"
+3. **宏观背景** — `<h2>` + bullets:与标的行业强相关的 2–3 个宏观指标(CPI/社零、利率/M2/社融、PMI/PPI、汇率等)+ 对估值/需求的传导;未拉取时写"宏观数据未拉取"
+4. **多维评分** — 表格:4 维度(fundamental / technical / news_catalyst / peer_positioning)+ 加权总分。`technical` 维度由 `technical-capital` skill 覆盖——本工作流 Step 0–4 只产宏观/基本面/估值/事件/机构观点数据,未跑 `technical-capital` 时该维度标"未覆盖"
+5. **价位计划** — 表格 + 列表:current_price / entry_zone / add_zone / target_price / stop_loss / risk_reward_ratio / time_horizon
+6. **基本面 + 技术面分析** — `<h3>` + bullets:highlights、concerns 分点列,带数据来源。技术面部分由 `technical-capital` skill 负责(本 skill 不覆盖技术指标),此处只列基本面 highlights/concerns
+7. **风险与行动方案** — 风险表格(type 6 选 1 + severity)+ 仓位建议 + review_triggers
+8. **数据声明与免责声明** — `<callout type="warning">`:数据源列表 + "本报告由 AI 生成,不构成投资建议"
 
 ### 会话内输出(只回链接)
 
@@ -123,7 +147,7 @@ lark-cli docs +create --api-version v2 \
 摘要:<一句话,30-80 字,包含 verdict + 关键价位>
 ```
 
-**禁止**在对话内重复 7 节正文、把整段 XML 粘到对话里、或输出 markdown 形式的报告(那是文档的事,不是对话的事)。
+**禁止**在对话内重复 8 节正文、把整段 XML 粘到对话里、或输出 markdown 形式的报告(那是文档的事,不是对话的事)。
 
 ### 判断分流
 
@@ -134,12 +158,12 @@ lark-cli docs +create --api-version v2 \
 
 | 场景 | 处理 |
 |------|------|
-| `lark-cli` 未安装 (`FileNotFoundError`) | **降级**:会话内输出 7 节报告 markdown 正文,顶部加 `⚠️ 飞书文档创建失败(<err>),以下为会话内输出` |
+| `lark-cli` 未安装 (`FileNotFoundError`) | **降级**:会话内输出 8 节报告 markdown 正文,顶部加 `⚠️ 飞书文档创建失败(<err>),以下为会话内输出` |
 | `lark-cli` 认证失败 (`[LARK_AUTH_REQUIRED]` 信号) | **不要降级**。先 `load_skill("lark-shared")` 拿到授权 split-flow,然后:`lark-cli auth login --scope "docs:document:create" --no-wait --json` → 生成二维码 → 把 `verification_url` + 二维码发给用户 → **本轮结束**。等用户回复"已授权"后再跑 `--device-code` 完成登录,回到 `lark-cli docs +create` 重试原步骤。 |
 | `lark-cli` 高风险门禁 (`[LARK_CONFIRMATION_REQUIRED]`, exit 10) | 把 `action` / `hint` 贴给用户,**明确告知是高风险操作**,等用户显式同意;同意后在原 argv 末尾加 `--yes` 重试。**禁止**默认加 `--yes` 静默重试。 |
 | `lark-cli` 其他结构化错误 (`[LARK_ERROR]` 信号) | 把 `type` / `message` / `hint` 贴给用户,按 `error.hint` 指示修复(常见: `permission_violations` → 提示用户去飞书开发者后台开 scope;`rate_limited` → 1s/3s 指数退避后再试 2 次)。仍失败才降级。 |
 | 文档创建成功但内容截断/部分 block 报错 | 重试 1 次(同一个 `--content` 整体重发);仍失败则降级同上 |
-| 用户本轮明确说"不要建文档,直接说结论" | 跳过 `lark-doc` 步骤,会话内只输出结论摘要(不输出 7 节正文) |
+| 用户本轮明确说"不要建文档,直接说结论" | 跳过 `lark-doc` 步骤,会话内只输出结论摘要(不输出 8 节正文) |
 | 网络/限流错误 | 最多重试 2 次(指数退避 1s/3s);失败后降级 |
 
 > **关键规则**:`run_command` 在 `lark-cli` 失败时会把 `[LARK_AUTH_REQUIRED]` / `[LARK_CONFIRMATION_REQUIRED]` / `[LARK_ERROR]` 作为结果第一行返回。看到这些前缀,按上面表格分支处理 —— **认证失败不允许直接降级 markdown**,必须走 `lark-shared` 授权 split-flow。
@@ -149,9 +173,9 @@ lark-cli docs +create --api-version v2 \
 ## When NOT to use this skill
 
 - **行业扫描 / 板块筛选** → `mx-stocks-screener`
-- **纯技术面 K 线 / 形态分析** → 专门的图表 skill;本 skill 不覆盖技术指标
+- **纯技术面 K 线 / 形态分析** → `technical-capital` skill;本 skill 不覆盖技术指标(第 3/5 节的 technical 维度由 technical-capital 补充)
 - **组合配置 / 多标的仓位** → 本 skill 只看单只
-- **宏观研究 / 大类资产** → `mx-macro-data`
+- **宏观研究 / 大类资产** → `mx-macro-data`(本 skill 只在 Step 0 为个股拉行业相关宏观背景,不做宏观研究本身)
 - **基金定投 / 推荐式荐股** → 不在 system_prompt 的"我做"清单内
 
 ## Common mistakes
@@ -164,3 +188,4 @@ lark-cli docs +create --api-version v2 \
 - **忽略市场差异** → 美股用 HKD EPS / 港股用 A 股 PE 分位 / ETF 当个股估都会算错
 - **已持仓用户只给"目标价",不给止损 / 加仓位** → 用户真实问题是仓位管理
 - **走 markdown 而不是 lark-doc** → 默认必须走飞书云文档,markdown 仅降级
+- **宏观背景拉全量 / 泛指指标** → Step 0 只拉行业相关的 2–3 个具体指标,禁止"中国经济""通胀情况"这类泛指

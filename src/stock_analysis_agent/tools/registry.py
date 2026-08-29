@@ -174,6 +174,15 @@ _TOOL_SPECS: tuple[_ToolSpec, ...] = (
             "tool failed: ...` string on `ToolExecutionError`."
         ),
     ),
+    _ToolSpec(
+        "run_technical_capital",
+        (
+            "`str` — verbatim Markdown report produced by the embedded "
+            "technical + capital-flow subagent, OR an `[ERROR] "
+            "technical_capital tool failed: ...` string on "
+            "`ToolExecutionError`."
+        ),
+    ),
 )
 
 

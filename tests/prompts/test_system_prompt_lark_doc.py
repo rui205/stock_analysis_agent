@@ -5,7 +5,7 @@ System prompt owns: role ("我是谁"), audience ("我为谁服务"), scope
 points, and the role-level stop conditions that promise three deliverables
 + disclaimer.
 
-System prompt does NOT own: the 7-section report format, the lark-doc
+System prompt does NOT own: the 8-section report format, the lark-doc
 publication command, the markdown fallback — those moved to the
 ``stock-analysis`` skill and are now pinned by
 ``tests/skill/test_stock_analysis_skill.py``.
@@ -88,7 +88,7 @@ def test_stop_conditions_declare_three_promises_and_disclaimer() -> None:
 
 
 def test_stop_conditions_do_not_leak_specific_format() -> None:
-    """The stop section must NOT enumerate the 7 section names or the lark-cli
+    """The stop section must NOT enumerate the 8 section names or the lark-cli
     command — those now live in the skill. This catches accidental
     back-sliding into the dual-source pattern.
     """

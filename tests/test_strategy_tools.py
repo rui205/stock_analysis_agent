@@ -24,6 +24,7 @@ from stock_analysis_agent.tools.strategy import (
     load_strategy,
     run_analyze_stock,
     run_deepresearch,
+    run_technical_capital,
 )
 
 
@@ -319,6 +320,74 @@ class TestRunDeepResearchShellDefault:
         run_deepresearch.invoke({"symbol": "06049.HK", "dimensions": ["基本面"]})
         fake_cls.assert_called_once()
         assert fake_cls.call_args.kwargs["include_shell_tool"] is True
+
+
+# ---------------------------------------------------------------------------
+# run_technical_capital — the technical + capital-flow sub-agent
+# ---------------------------------------------------------------------------
+
+
+class TestRunTechnicalCapitalTool:
+    """The technical + capital-flow sub-agent is a ``StockAnalysisAgent``
+    driven by the ``technical-capital`` persona (not ``DeepResearchAgent``)."""
+
+    def test_success_returns_markdown_verbatim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        md_streamed = "# TechnicalCapital — 600519.SH\n\n站上20日线,主力净流入。\n"
+        fake_events = [
+            {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="# TechnicalCapital — 600519.SH\n\n")}},
+            {"event": "on_chat_model_stream", "data": {"chunk": AIMessage(content="站上20日线,主力净流入。\n")}},
+        ]
+        fake_sub = MagicMock()
+        fake_sub.stream.return_value = iter(fake_events)
+        fake_cls = MagicMock(return_value=fake_sub)
+        import stock_analysis_agent.tools.strategy as mod
+        monkeypatch.setattr(mod, "StockAnalysisAgent", fake_cls)
+        out = run_technical_capital.invoke({"symbol": "600519.SH"})
+        assert out == md_streamed
+        fake_cls.assert_called_once()
+        kwargs = fake_cls.call_args.kwargs
+        assert kwargs["include_shell_tool"] is True
+        assert kwargs["recursion_limit"] == 100
+
+    def test_tool_failure_returns_error_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from stock_analysis_agent.agent.exceptions import ToolExecutionError
+        fake_sub = MagicMock()
+        fake_sub.stream.side_effect = ToolExecutionError("simulated")
+        fake_cls = MagicMock(return_value=fake_sub)
+        import stock_analysis_agent.tools.strategy as mod
+        monkeypatch.setattr(mod, "StockAnalysisAgent", fake_cls)
+        out = run_technical_capital.invoke({"symbol": "000001.SZ"})
+        assert out.startswith("[ERROR]")
+        assert "technical_capital" in out
+        assert "simulated" in out
+
+    def test_recursion_exhaustion_returns_error_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake_sub = MagicMock()
+        fake_sub.stream.side_effect = RecursionError("simulated budget exhaustion")
+        fake_cls = MagicMock(return_value=fake_sub)
+        import stock_analysis_agent.tools.strategy as mod
+        monkeypatch.setattr(mod, "StockAnalysisAgent", fake_cls)
+        out = run_technical_capital.invoke({"symbol": "06049.HK"})
+        assert out.startswith("[ERROR]")
+        assert "technical_capital" in out
+
+
+def test_run_technical_capital_returns_cached_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """technical-capital reports are cached too, keyed by symbol."""
+    import stock_analysis_agent.tools.strategy as st
+
+    query = st._cache_query("600887.SH", dimensions=None, shell=True)
+    st._subagent_cache.set(site="technical_capital", query=query, text="cached technical")
+
+    class _ShouldNotRun:
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("sub-agent must not be constructed on cache hit")
+
+    monkeypatch.setattr(st, "StockAnalysisAgent", _ShouldNotRun)
+    out = run_technical_capital.invoke({"symbol": "600887.SH"})
+    assert out == "cached technical"
 
 
 # ---------------------------------------------------------------------------

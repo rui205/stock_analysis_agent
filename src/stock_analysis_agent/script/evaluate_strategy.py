@@ -66,6 +66,7 @@ _ORCHESTRATOR_TOOL_NAMES: list[str] = [
     "load_strategy",
     "run_analyze_stock",
     "run_deepresearch",
+    "run_technical_capital",
 ]
 
 
@@ -202,6 +203,9 @@ def render_local_markdown(report: StrategyMatchReport, now_iso: str) -> str:
         for i, m in enumerate(report.criterion_matches, 1)
     )
     deepresearch = report.data_sources.deepresearch or "未调用 deepresearch(基本面数据已足够)"
+    technical_capital = (
+        report.data_sources.technical_capital or "未调用 technical_capital(策略原则未涉及技术面/资金面)"
+    )
     stock_analysis_block = report.data_sources.stock_analysis
     if report.data_sources.stock_analysis_url:
         stock_analysis_block += (
@@ -221,6 +225,7 @@ def render_local_markdown(report: StrategyMatchReport, now_iso: str) -> str:
         f"## 数据来源\n"
         f"### 来自 stock_analysis\n{stock_analysis_block}\n\n"
         f"### 来自 deepresearch\n{deepresearch}\n\n"
+        f"### 来自 technical_capital\n{technical_capital}\n\n"
         f"## 判断理论\n{report.judgment_rationale}\n\n"
         f"## 行动建议\n{report.action_recommendation}\n\n"
         f"---\n*本报告由 AI 生成,不构成投资建议*\n"

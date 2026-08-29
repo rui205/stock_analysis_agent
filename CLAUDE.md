@@ -218,7 +218,34 @@ pytest -k "关键字" -v           # 跑某类
 
 ---
 
+## 十三、Agent 职责分层
+
+本项目的 LLM agent 按「数据源 → 工具 → agent → skill → prompt」分层。agent 层只有 4 个类,职责边界是硬约束,**改任何 agent 前先看这张表**:
+
+| Agent | 文件 | 职责 | 工具面 | 输出契约 |
+|---|---|---|---|---|
+| `BaseAgent` | `agent/base.py` | 通用 LLM agent 包装(langchain `create_agent`),负责模型/中间件/流式/超时 | 由调用方传入 | 无固定契约 |
+| `StockAnalysisAgent` | `agent/stock_analysis.py` | **低层可复用** agent,prompt 由调用方提供;是基本面估值 subagent 与 `technical-capital` subagent 的载体 | `load_skill` / `read_file` / (opt) `run_command` | 调用方 prompt 定义 |
+| `DeepResearchAgent` | `agent/deepresearch.py` | 深研 subagent:维度拆问题 → 逐题查证 → 带证据链 + 置信度的报告 | `load_skill` / `read_file` / `web_search` / `run_command` | Markdown 研究报告 |
+| `StrategyMatchAgent` | `agent/strategy_match.py` | **顶层编排**:加载策略 → 跑 subagent → 逐条匹配 → 出 `StrategyMatchReport` | `load_strategy` / `run_analyze_stock` / `run_deepresearch` / `run_technical_capital` / `load_skill` / (opt) `run_command` | `StrategyMatchReport` JSON |
+
+**分析视角分离(核心约定)**:
+
+- `stock-analysis`(由 `StockAnalysisAgent` 承载)回答「**值不值**」:基本面 + 估值 + 事件 + 机构观点,结论偏事实。
+- `technical-capital`(由 `StockAnalysisAgent` 换 prompt 承载)回答「**何时进出**」:技术面(趋势/动量/形态/量能)+ 资金面(主力/北向/大单/换手),数据客观、解读与择时结论偏交易。
+- 两者**不互相污染**:技术面超买 / 资金流出的结论不进基本面估值判断,反之亦然。`stock-analysis` 输出里的 `technical` 评分维度与「基本面 + 技术面」章节是占位,由 `technical-capital` 补充,不在此工作流展开。
+
+**分层红线**:
+
+- `StockAnalysisAgent` / `DeepResearchAgent` 是「研究 / 数据发现」层,`StrategyMatchAgent` 是「编排」层——**orchestrator 不得绕过 subagent 自己跑数**(自己跑出来的结果进不了匹配上下文)。
+- `read_file` 是 subagent 专属的数据发现原语,orchestrator 不暴露。
+- 新加一个「数据补充」维度的 subagent,照 `run_deepresearch` / `run_technical_capital` 的既有模式:一个 skill + 一个 prompt + 一个 `@tool` 包装 + `StrategyMatchAgent` 挂载。
+
+---
+
 ## 版本
+
+- v1.3 — 新增「Agent 职责分层」约定;引入 `technical-capital`(技术面+资金面)作为与 `stock-analysis` 平行的分析视角
 
 - v1.2 — 新增 `src/<package>/web/`(HTTP 接口)与 `src/<package>/skill/`(项目级 skill 定义)约定
 - v1.1 — 保留 src 布局,在包内新增 mcp/tools/agent/script/conf/memory/prompts 分层约定

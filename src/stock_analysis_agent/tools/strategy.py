@@ -9,6 +9,8 @@ that flow into the output report.
 The dynamic ``run_analyze_stock`` tool lives in this same module so
 both strategy-related tools are colocated; it depends on
 :class:`StockAnalysisAgent` and is exercised separately in Task 4.
+``run_technical_capital`` is the sibling tool for the technical +
+capital-flow sub-agent, also built on :class:`StockAnalysisAgent`.
 
 The sub-agent returns Markdown (per the bundled ``stock-analysis`` skill),
 so ``run_analyze_stock`` is a thin wrapper that just forwards the
@@ -28,10 +30,24 @@ from stock_analysis_agent.agent.stock_analysis import StockAnalysisAgent
 from stock_analysis_agent.agent.stream import collect_final_text
 from stock_analysis_agent.memory.file_cache import _FileCache
 from stock_analysis_agent.tools._paths import PACKAGE_ROOT
+from stock_analysis_agent.tools.prompt import render_system_prompt
+from stock_analysis_agent.tools.skill import (
+    format_skill_index_markdown,
+    get_skill_index,
+)
 
 # Resolved at import time — points at conf/strategies/. Tests may
 # monkeypatch this to a tmp dir.
 _STRATEGIES_DIR = PACKAGE_ROOT / "conf" / "strategies"
+
+#: Absolute path to the technical-capital sub-agent system prompt template.
+_TECHNICAL_CAPITAL_PROMPT_FILE: Path = PACKAGE_ROOT / "prompts" / "technical_capital_system_prompt.md"
+
+#: Tool names exposed to the technical-capital sub-agent. It runs as a
+#: :class:`StockAnalysisAgent` with ``run_command`` always on (the mx-*
+#: data scripts need shell access), so the prompt advertises the same
+#: surface as ``script.analyze_stock`` minus the orchestrator tools.
+_TECHNICAL_CAPITAL_TOOL_NAMES: tuple[str, ...] = ("load_skill", "read_file", "run_command")
 
 #: Frontmatter keys the strategy schema recognises. Anything else
 #: (e.g. ``tags:`` in ``value-investing.md``) is dropped by
@@ -322,13 +338,112 @@ def run_deepresearch(symbol: str, dimensions: list[str]) -> str:
         return f"[ERROR] deepresearch tool failed: {e}"
 
 
+def _load_technical_capital_prompt() -> str:
+    """Load and render the technical-capital sub-agent system prompt.
+
+    Mirrors :func:`script.analyze_stock._load_system_prompt`: injects the
+    full skill catalog (``<!-- SKILL_INDEX -->``) and the sub-agent's own
+    tool catalog (``<!-- TOOL_INDEX -->``) into
+    ``prompts/technical_capital_system_prompt.md``.
+
+    Returns:
+        The rendered system prompt for the technical-capital sub-agent.
+    """
+    return render_system_prompt(
+        _TECHNICAL_CAPITAL_PROMPT_FILE,
+        tool_names=list(_TECHNICAL_CAPITAL_TOOL_NAMES),
+        catalog_placeholder="<!-- SKILL_INDEX -->",
+        catalog_doc=format_skill_index_markdown(get_skill_index()),
+    )
+
+
+def _run_technical_capital_and_collect(symbol: str) -> str:
+    """Run the technical-capital sub-agent and return its final Markdown text.
+
+    The sub-agent is a :class:`StockAnalysisAgent` driven by the
+    ``technical-capital`` persona + skill. Unlike ``run_analyze_stock``
+    (which publishes a 飞书 doc), this sub-agent returns a Markdown report
+    verbatim for the orchestrator to fold into per-criterion matching —
+    same contract as ``run_deepresearch``.
+    """
+    shell_enabled = True
+    query = _cache_query(symbol, dimensions=None, shell=shell_enabled)
+    cached = _subagent_cache.get(site="technical_capital", query=query)
+    if cached is not None:
+        return cached
+
+    system_prompt = _load_technical_capital_prompt()
+    sub = StockAnalysisAgent(
+        system_prompt=system_prompt,
+        include_shell_tool=shell_enabled,
+        # Same budget as the analyze-stock sub-agent: the mx-* skill data
+        # fetches each cost ~4 graph steps and exhaust smaller budgets.
+        recursion_limit=100,
+    )
+    events = sub.stream(
+        [HumanMessage(f"按 system prompt 的 schema 给出 {symbol} 的技术面 + 资金面分析报告。")]
+    )
+    report = collect_final_text(events)
+    try:
+        _subagent_cache.set(site="technical_capital", query=query, text=report)
+    except OSError:
+        pass  # cache write failure does not fail the sub-agent run
+    return report
+
+
+class RunTechnicalCapitalInput(BaseModel):
+    """Input schema for the ``run_technical_capital`` tool."""
+
+    symbol: str = Field(
+        min_length=1,
+        description=(
+            "Stock symbol to analyze, e.g. `600519.SH`, `02319.HK`, "
+            "`AAPL.US`. The tool runs the technical + capital-flow "
+            "sub-agent on this symbol and returns its Markdown report verbatim."
+        ),
+    )
+
+
+@tool(
+    "run_technical_capital",
+    description=(
+        "Run the technical + capital-flow (技术面 + 资金面) sub-agent on a "
+        "stock symbol and return its Markdown analysis verbatim. Use when "
+        "one or more strategy principles involve technical signals (trend / "
+        "momentum / support-resistance) or capital-flow conditions (main-force "
+        "inflow / northbound / turnover) that `run_analyze_stock`'s "
+        "fundamental report does not cover. Returns Markdown on success; an "
+        "`[ERROR] technical_capital tool failed: ...` string when the sub-agent "
+        "run fails."
+    ),
+    args_schema=RunTechnicalCapitalInput,
+)
+def run_technical_capital(symbol: str) -> str:
+    """Synchronously run the technical-capital sub-agent and forward its Markdown output.
+
+    Args:
+        symbol: Stock symbol, e.g. ``"600519.SH"``.
+
+    Returns:
+        The sub-agent's final Markdown text on success, or an ``[ERROR]``-prefixed
+        string when the sub-agent's tool retries are exhausted or its graph runs
+        out of recursion budget.
+    """
+    try:
+        return _run_technical_capital_and_collect(symbol)
+    except Exception as e:  # noqa: BLE001 — degrade any sub-agent failure to [ERROR]
+        return f"[ERROR] technical_capital tool failed: {e}"
+
+
 __all__ = [
     "LoadStrategyInput",
     "RunAnalyzeStockInput",
     "RunDeepResearchInput",
+    "RunTechnicalCapitalInput",
     "_list_strategy_names",
     "_parse_strategy_frontmatter",
     "load_strategy",
     "run_analyze_stock",
     "run_deepresearch",
+    "run_technical_capital",
 ]

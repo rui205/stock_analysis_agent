@@ -1,6 +1,6 @@
 """Data-driven tests for the stock-analysis skill's output contract.
 
-The 7-section lark-doc XML report format and the fallback path live in this
+The 8-section lark-doc XML report format and the fallback path live in this
 skill (not in ``prompts/system_prompt.md``); these tests pin the contract
 so future edits don't silently drift away from the documented behavior.
 
@@ -91,12 +91,12 @@ class TestOutputContract:
             "(e.g. {YYYY-MM-DD})"
         )
 
-    def test_output_contract_enumerates_seven_sections(self) -> None:
-        """The contract must enumerate the 7 document sections in order.
+    def test_output_contract_enumerates_eight_sections(self) -> None:
+        """The contract must enumerate the 8 document sections in order.
 
         "基本面 + 技术面分析" is one spec section but asserted as two
         distinct substrings (基本面 and 技术面) so the assertion list has
-        8 items — same convention used by the original system_prompt
+        9 items — same convention used by the original system_prompt
         tests.
         """
         text = _read_skill()
@@ -104,6 +104,7 @@ class TestOutputContract:
         expected_substrings = [
             "执行摘要",
             "公司画像",
+            "宏观背景",
             "多维评分",
             "价位计划",
             "基本面",
@@ -124,7 +125,7 @@ class TestOutputContract:
         # The "禁止" / "不要" prohibition language must be present.
         assert "禁止" in body or "不要" in body, (
             "output contract must contain an explicit prohibition "
-            "(e.g. '禁止在对话内重复 7 节正文')"
+            "(e.g. '禁止在对话内重复 8 节正文')"
         )
 
     def test_output_contract_declares_fallback(self) -> None:
@@ -143,7 +144,7 @@ class TestOutputContract:
 
 
 class TestSingleSourceOfTruth:
-    """The 7-section format must live ONLY in stock-analysis/SKILL.md.
+    """The 8-section format must live ONLY in stock-analysis/SKILL.md.
 
     system_prompt.md owns role/identity/scope/principles/tool index only;
     it must not re-introduce a concrete output format section. This guard
@@ -159,8 +160,8 @@ class TestSingleSourceOfTruth:
             "the format belongs in the stock-analysis skill"
         )
 
-    def test_system_prompt_does_not_enumerate_seven_sections(self) -> None:
-        """system_prompt.md must NOT enumerate the 7 section names.
+    def test_system_prompt_does_not_enumerate_eight_sections(self) -> None:
+        """system_prompt.md must NOT enumerate the 8 section names.
 
         Allows the words "风险点" and "免责声明" to appear (they are part of
         role-level stop conditions), but the specific 7 report headings
@@ -177,7 +178,7 @@ class TestSingleSourceOfTruth:
 
     def test_skill_does_not_delegate_to_system_prompt(self) -> None:
         """The skill must NOT tell the reader to consult system_prompt.md
-        for the 7-section format — that was the dual-source pattern we
+        for the 8-section format — that was the dual-source pattern we
         just removed.
         """
         text = _read_skill()
