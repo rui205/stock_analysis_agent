@@ -1,6 +1,7 @@
 """BaseAgent: a reusable wrapper around langchain.agents.create_agent."""
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from typing import Any, cast
@@ -14,6 +15,7 @@ from langchain_core.tools import BaseTool
 from stock_analysis_agent.agent.exceptions import AgentTimeoutError
 from stock_analysis_agent.agent.middleware import (
     _FeedbackMiddleware,
+    _ModelRetryMiddleware,
     _StripThinkingMiddleware,
     _ToolRetryMiddleware,
 )
@@ -62,6 +64,95 @@ def _usage_from_event(event: StreamEvent) -> tuple[int, int] | None:
     )
 
 
+_SUMMARY_MAX_LEN = 200
+
+
+def _summarize_content(content: object) -> str:
+    """Return ``content`` as a single line, truncated to ``_SUMMARY_MAX_LEN``.
+
+    A ``str`` content is used directly; a ``list`` content (multimodal /
+    thinking blocks) yields its concatenated ``text`` blocks (mirroring
+    :func:`stock_analysis_agent.agent.stream.chunk_text`). Anything else is
+    coerced via ``str``. Values longer than ``_SUMMARY_MAX_LEN`` are cut with
+    a trailing ``...``.
+    """
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "".join(
+            str(block.get("text", ""))
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    else:
+        text = "" if content is None else str(content)
+    if len(text) > _SUMMARY_MAX_LEN:
+        return text[: _SUMMARY_MAX_LEN] + "..."
+    return text
+
+
+def _summarize_messages(messages: object) -> str:
+    """Render a concise ``{role}: {content}`` summary of ``messages``.
+
+    Accepts the batch shape emitted by ``on_chat_model_start``
+    (``list[list[BaseMessage]]``) as well as a flat ``list[BaseMessage]``.
+    Returns ``""`` for an unexpected shape.
+    """
+    if not isinstance(messages, list):
+        return ""
+    lines: list[str] = []
+    for item in messages:
+        batch = item if isinstance(item, list) else [item]
+        for msg in batch:
+            role = getattr(msg, "type", "?")
+            content = _summarize_content(getattr(msg, "content", ""))
+            lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
+def _summarize_model_output(output: object) -> str:
+    """Render a concise summary of a model ``output`` (an ``AIMessage``).
+
+    Emits the truncated content, then one ``tool_call: name(args)`` line per
+    tool call (args serialized to JSON and truncated).
+    """
+    lines = [_summarize_content(getattr(output, "content", ""))]
+    tool_calls = getattr(output, "tool_calls", None) or []
+    for tc in tool_calls:
+        if isinstance(tc, dict):
+            name = str(tc.get("name", "?"))
+            args = tc.get("args") or {}
+        else:
+            name = str(getattr(tc, "name", "?"))
+            args = getattr(tc, "args", None) or {}
+        args_json = json.dumps(args, ensure_ascii=False, default=str)
+        if len(args_json) > _SUMMARY_MAX_LEN:
+            args_json = args_json[: _SUMMARY_MAX_LEN] + "..."
+        lines.append(f"tool_call: {name}({args_json})")
+    return "\n".join(lines)
+
+
+def _log_model_event(event: StreamEvent, agent_name: str) -> None:
+    """Log a concise summary of each model call's input and output.
+
+    Hooks ``on_chat_model_start`` (prints the messages about to be sent) and
+    ``on_chat_model_end`` (prints the returned content + tool calls). Other
+    event types are ignored.
+    """
+    evt = event.get("event")
+    data = event.get("data") or {}
+    if evt == "on_chat_model_start":
+        input_data = data.get("input")
+        messages = (
+            input_data.get("messages") if isinstance(input_data, dict) else input_data
+        )
+        logger.info("[%s] model input:\n%s", agent_name, _summarize_messages(messages))
+    elif evt == "on_chat_model_end":
+        logger.info(
+            "[%s] model output:\n%s", agent_name, _summarize_model_output(data.get("output"))
+        )
+
+
 class BaseAgent:
     """Reusable Agent base class for stock_analysis_agent.
 
@@ -75,9 +166,9 @@ class BaseAgent:
     :mod:`stock_analysis_agent.conf.settings` (single source of truth).
     The API key, model, and endpoint are resolved at :meth:`_build_graph`
     time — never hardcoded — via
-    :func:`stock_analysis_agent.conf.settings.get_settings`, which honors
-    the ``select_source`` config to switch between the qwen and deepseek
-    models.
+    :func:`stock_analysis_agent.conf.settings.get_settings`, which reads the
+    model registry (``model.json``) and honors the ``MODEL`` env var to pick
+    the active entry.
     """
 
     def __init__(
@@ -203,13 +294,12 @@ class BaseAgent:
 
         The LLM API key, model, and endpoint are sourced from
         :func:`stock_analysis_agent.conf.settings.get_settings` and passed
-        explicitly to ``init_chat_model``. The model source is chosen by
-        ``select_source`` (see :mod:`stock_analysis_agent.conf.settings`):
-        ``qwen`` uses ``$ANTHROPIC_API_KEY`` / ``$ANTHROPIC_BASE_URL``,
-        ``deepseek`` uses ``$DEEPSEEK_API_KEY`` / ``$DEEPSEEK_BASE_URL``.
-        A missing env var raises :class:`MissingAPIKeyError` from that
-        helper — by design, so operators see a clear error before the
-        LangChain stack attempts an unauthenticated call.
+        explicitly to ``init_chat_model``. The active model is chosen by the
+        ``MODEL`` env var (see :mod:`stock_analysis_agent.conf.settings`),
+        which selects an entry from ``model.json`` carrying ``model`` /
+        ``api_key`` / ``base_url``. A missing entry or empty ``api_key``
+        raises from that helper — by design, so operators see a clear error
+        before the LangChain stack attempts an unauthenticated call.
 
         The provider is also passed explicitly (``model_provider``).
         LangChain's ``init_chat_model`` cannot infer a provider from
@@ -224,9 +314,9 @@ class BaseAgent:
         from stock_analysis_agent.conf.settings import get_settings
 
         settings = get_settings()
-        # The model id is source-aware: when the agent was built with the
+        # The model id is registry-aware: when the agent was built with the
         # default model (no per-agent override), defer to ``settings.model``
-        # so ``select_source`` can switch between qwen and deepseek. An
+        # so the ``MODEL`` env var can switch between registry entries. An
         # explicit per-agent ``model=`` still wins.
         model_id = self._model if self._model != DEFAULT_MODEL else settings.model
         thinking = (
@@ -249,9 +339,15 @@ class BaseAgent:
             # block (400 "missing field 'thinking'"). Orthogonal to the
             # tool-call middlewares below — it hooks wrap_model_call only.
             _StripThinkingMiddleware(),
-            # First defined = outermost: feedback must wrap the retry
-            # layer so it sees the retry layer's exhausted
-            # ToolExecutionError and can degrade it into a ToolMessage.
+            # Retries the model call itself on transient network errors
+            # (httpx.ReadError, connection drops mid-stream). Sits inside
+            # the thinking-strip layer so stripping runs once, then the
+            # retry loop re-invokes the model on each attempt.
+            _ModelRetryMiddleware(max_retries=self._max_retries),
+            # First defined = outermost for the tool-call chain: feedback
+            # must wrap the retry layer so it sees the retry layer's
+            # exhausted ToolExecutionError and can degrade it into a
+            # ToolMessage.
             _FeedbackMiddleware(failure_budget=self._tool_failure_budget),
             _ToolRetryMiddleware(max_retries=self._max_retries),
         ]
@@ -302,6 +398,7 @@ class BaseAgent:
                         version="v2",
                         config=resolved_config,
                     ):
+                        _log_model_event(event, self._name)
                         if event.get("event") == "on_chat_model_end":
                             usage = _usage_from_event(event)
                             if usage is not None:
@@ -381,6 +478,7 @@ class BaseAgent:
                 version="v2",
                 config=resolved_config,
             ):
+                _log_model_event(event, self._name)
                 if event.get("event") == "on_chat_model_end":
                     usage = _usage_from_event(event)
                     if usage is not None:

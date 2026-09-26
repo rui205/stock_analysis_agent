@@ -1,8 +1,6 @@
 """Tests for stock_analysis_agent.agent.exceptions."""
 from __future__ import annotations
 
-import pytest
-
 from stock_analysis_agent.agent.exceptions import ToolExecutionError
 
 

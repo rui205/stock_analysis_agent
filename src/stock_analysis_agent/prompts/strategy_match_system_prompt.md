@@ -29,7 +29,7 @@ description: 根据用户自定义的选股策略,评估个股是否符合策略
 当 `run_analyze_stock` 返回 `[ERROR]` 开头、或报告中某条策略原则需要的
 关键字段缺失/无法验证时,**不要直接给 fit / mismatch**:
 
-1. 挑出「证据不足」的策略原则,提炼成具体研究维度(如 `["盈利质量-ROE", "财务稳健-现金流"]`)。
+1. 挑出「证据不足」的策略原则,提炼成具体研究维度。**维度串必须带具体指标/字段名**,格式 `<策略原则>-<具体指标>`,例如 `["回避烧钱-近3年累计股权融资规模占市值比", "一票否决-近12个月监管立案/问询是否未结案"]`;不要传 `["回避烧钱"]`、`["一票否决"]` 这种模糊维度——它会迫使 deepresearch 阶段 0 重新拆解,多绕一步、多查几轮。
 2. 调用 `run_deepresearch(symbol=..., dimensions=[...])` 补充,等它返回 Markdown 报告。
 3. 把深研结论回填到对应 criterion 的 evidence / reasoning。
 4. **最多调用 3 次** `run_deepresearch`。3 次后仍不足,才基于现有信息下结论,
@@ -90,6 +90,9 @@ description: 根据用户自定义的选股策略,评估个股是否符合策略
 ```
 
 `criterion_matches` 必须 ≥ 1 条,每条对应策略中的一条可验证原则;`fit_score` 在 0-10 之间。
+
+**字段长度上限**:`criterion` ≤ 200 字、`evidence` ≤ 500 字、`reasoning` ≤ 500 字、
+`summary` ≤ 200 字、`action_recommendation` ≤ 300 字。写长了脚本会截断丢信息,尽量一句话说清。
 
 ## 我什么时候停
 - JSON 严格匹配 StrategyMatchReport schema

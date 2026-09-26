@@ -54,7 +54,7 @@ agent 自己从报告里捞需要的章节(verdict / score / 主要风险等)喂
 当 `run_analyze_stock` 返回 `[ERROR]`、或报告中某条策略原则所需字段缺失/无法验证时,
 **不要直接给 fit / mismatch**:
 
-1. 挑出「证据不足」的策略原则,提炼为具体维度(如 `["盈利质量-ROE"]`)。
+1. 挑出「证据不足」的策略原则,提炼为具体维度。**维度串必须带具体指标/字段名**(格式 `<策略原则>-<具体指标>`),如 `["回避烧钱-近3年累计股权融资规模占市值比"]`;不要传 `["回避烧钱"]` 这种模糊维度——它会迫使 deepresearch 重新拆解,多查几轮。
 2. 调 `run_deepresearch(symbol=..., dimensions=[...])`,等返回 Markdown 报告。
 3. 把深研结论回填到对应 criterion 的 evidence / reasoning。
 4. **最多 3 次**;仍不足则基于现有信息给结论,`confidence=low`,并在
@@ -75,10 +75,10 @@ agent 自己从报告里捞需要的章节(verdict / score / 主要风险等)喂
 针对策略中**所有可独立验证**的原则(忽略纯定性描述如"长期持有"),逐条生成一条
 `StrategyCriterionMatch`:
 
-- `criterion` — 原文引用
+- `criterion` — 原文引用(≤200 字)
 - `match_level` — `fit` / `partial` / `mismatch`
-- `evidence` — 引用 subagent 摘要里的具体数字/字段
-- `reasoning` — 为什么是这个评级
+- `evidence` — 引用 subagent 摘要里的具体数字/字段(≤500 字)
+- `reasoning` — 为什么是这个评级(≤500 字)
 
 ### Step 4. 综合判断
 
@@ -182,6 +182,7 @@ lark-cli 命令细节、`lark-cli docs +create` / `+update` 选择、`<callout>`
 - **orchestrator 绕过 subagent 自己跑数** → 基本面数据一律以 `run_analyze_stock` 返回的报告为准。即使本 agent 带 `run_command`(用于 lark-cli 发布),也不要自己调 mx-* skill 补数——自己跑出来的结果进不了匹配上下文,只会浪费查询;数据不全时在报告里如实标注"数据缺失",由用户决定是否开 `--include-shell-tool` 重跑
 - **`criterion_matches` 漏掉策略中所有可验证原则** → 必须穷举,原则描述不清时给 partial + reasoning="原则表述模糊"
 - **`fit_score` 超 0-10 范围** → schema 校验会失败,务必保证
+- **`evidence` / `reasoning` 写太长** → 各自 ≤500 字、`criterion` ≤200 字;超长会被脚本截断丢信息,尽量一句话说清
 - **`overall_fit` 选错** → 严格按 §4 触发条件,不要因为 "分数高" 就直接 buy
 - **策略中只有定性描述** → 仍要逐条给出 criterion_match,evidence 写 "定性原则,无量化判据"
 - **数据不足却强行给 fit/mismatch** → 先按 Step 2.5 调 `run_deepresearch` 补充,别硬凑

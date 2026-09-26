@@ -138,6 +138,31 @@ class TestOutputContract:
         )
 
 
+class TestStep1Snapshot:
+    """Step 1 基本面快照 must fetch the 排雷 fields that belong to fundamentals.
+
+    ``商誉`` is a standard balance-sheet item (same tier as ROE / 负债率), so
+    the snapshot fetches it — it must NOT be punted to deepresearch. The other
+    排雷 checks (近 3 年股权融资、监管立案/问询) are 查证类 and stay in
+    deepresearch by design.
+    """
+
+    def test_snapshot_includes_goodwill(self) -> None:
+        """Step 1 must list 商誉 alongside the other core financials."""
+        import re
+
+        pattern = re.compile(
+            r"^###\s+Step 1\.[^\n]*\n(.*?)(?=^###\s+|\Z)",
+            re.MULTILINE | re.DOTALL,
+        )
+        match = pattern.search(_read_skill())
+        assert match, "missing '### Step 1' section"
+        assert "商誉" in match.group(1), (
+            "商誉 must be fetched in Step 1 基本面快照 (it's a balance-sheet "
+            "item, not a deepresearch 查证)"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Regression guard — single source of truth
 # ---------------------------------------------------------------------------

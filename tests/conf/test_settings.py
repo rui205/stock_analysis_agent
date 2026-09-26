@@ -1,179 +1,278 @@
 """Tests for stock_analysis_agent.conf.settings."""
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 
 import pytest
 
 from stock_analysis_agent.conf import LLMSettings, load_llm_settings
 from stock_analysis_agent.conf.settings import (
-    API_KEY_ENV_VAR,
-    BASE_URL_ENV_VAR,
-    DEEPSEEK_API_KEY_ENV_VAR,
-    DEEPSEEK_BASE_URL_ENV_VAR,
-    DEEPSEEK_MODEL,
     DEFAULT_MAX_TOKENS,
     DEFAULT_MODEL,
     DEFAULT_MODEL_PROVIDER,
-    DEFAULT_SELECT_SOURCE,
     DEFAULT_TEMPERATURE,
-    SELECT_SOURCE_ENV_VAR,
-    SOURCE_DEEPSEEK,
-    SOURCE_QWEN,
+    MODEL_ENV_VAR,
     MissingAPIKeyError,
+    ModelConfigError,
     _mask_key,
     get_settings,
+    resolve_subagent_model,
 )
 
 
-def test_default_model_uses_settings_constant() -> None:
-    """Spec: model identifier mirrors the ``DEFAULT_MODEL`` constant
-    declared in :mod:`stock_analysis_agent.conf.settings`."""
-    settings = load_llm_settings(api_key="dummy")
+def _write_config(tmp_path: Path, data: dict) -> str:
+    """Write ``data`` to a temp ``model.json`` and return its path."""
+    path = tmp_path / "model.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return str(path)
+
+
+def _qwen_entry(**overrides) -> dict:
+    """A valid ``qwen3.8-max`` entry, overridable per-field."""
+    entry: dict = {
+        "model": "qwen3.8-max",
+        "api_key": "dummy-key",
+        "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+    }
+    entry.update(overrides)
+    return entry
+
+
+# ---------------------------------------------------------------------------
+# model id + provider resolution
+# ---------------------------------------------------------------------------
+
+
+def test_default_model_uses_settings_constant(tmp_path: Path) -> None:
+    """The default registry key mirrors the ``DEFAULT_MODEL`` constant."""
+    path = _write_config(tmp_path, {DEFAULT_MODEL: _qwen_entry()})
+    settings = load_llm_settings(config_path=path)
     assert settings.model == DEFAULT_MODEL
 
 
-def test_default_provider_is_anthropic() -> None:
-    """Spec: provider defaults to ``anthropic`` because MiniMax is reached
-    via an Anthropic-protocol endpoint (see DEFAULT_MODEL_PROVIDER)."""
-    settings = load_llm_settings(api_key="dummy")
+def test_default_provider_is_anthropic(tmp_path: Path) -> None:
+    """provider defaults to ``anthropic`` when the entry omits it."""
+    path = _write_config(tmp_path, {DEFAULT_MODEL: _qwen_entry()})
+    settings = load_llm_settings(config_path=path)
     assert settings.provider == DEFAULT_MODEL_PROVIDER == "anthropic"
 
 
-def test_explicit_provider_override() -> None:
-    """The provider can be overridden per-call for non-anthropic routes."""
-    settings = load_llm_settings(api_key="dummy", provider="openai")
+def test_explicit_provider_override(tmp_path: Path) -> None:
+    """An entry-level ``provider`` field is honored."""
+    path = _write_config(tmp_path, {DEFAULT_MODEL: _qwen_entry(provider="openai")})
+    settings = load_llm_settings(config_path=path)
     assert settings.provider == "openai"
 
 
+def test_provider_kwarg_overrides_entry(tmp_path: Path) -> None:
+    """A caller-supplied ``provider`` wins over the registry value."""
+    path = _write_config(tmp_path, {DEFAULT_MODEL: _qwen_entry(provider="openai")})
+    settings = load_llm_settings(config_path=path, provider="anthropic")
+    assert settings.provider == "anthropic"
+
+
 # ---------------------------------------------------------------------------
-# select_source — qwen vs deepseek resolution
+# model selection — explicit arg vs MODEL env var vs default
 # ---------------------------------------------------------------------------
 
 
-def test_default_select_source_is_qwen() -> None:
-    """Without an override, the source resolves to ``qwen``."""
-    settings = load_llm_settings(api_key="dummy")
-    assert settings.select_source == SOURCE_QWEN == DEFAULT_SELECT_SOURCE
-
-
-def test_deepseek_source_resolves_deepseek_config(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``select_source="deepseek"`` must resolve the DeepSeek model, key,
-    and endpoint from the dedicated env vars."""
-    monkeypatch.setenv(DEEPSEEK_API_KEY_ENV_VAR, "deepseek-key")
-    monkeypatch.setenv(DEEPSEEK_BASE_URL_ENV_VAR, "https://api.deepseek.com/anthropic")
-    settings = load_llm_settings(select_source="deepseek")
-    assert settings.model == DEEPSEEK_MODEL == "deepseek-v4-pro"
+def test_model_is_read_from_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The active entry is selected via ``MODEL`` without an explicit arg."""
+    data = {
+        DEFAULT_MODEL: _qwen_entry(),
+        "deepseek-v4-pro": {
+            "model": "deepseek-v4-pro",
+            "api_key": "deepseek-key",
+            "base_url": "https://api.deepseek.com/anthropic",
+        },
+    }
+    path = _write_config(tmp_path, data)
+    monkeypatch.setenv(MODEL_ENV_VAR, "deepseek-v4-pro")
+    settings = load_llm_settings(config_path=path)
+    assert settings.model == "deepseek-v4-pro"
     assert settings.api_key == "deepseek-key"
     assert settings.base_url == "https://api.deepseek.com/anthropic"
-    assert settings.select_source == SOURCE_DEEPSEEK
 
 
-def test_select_source_is_read_from_env(
-    monkeypatch: pytest.MonkeyPatch,
+def test_explicit_model_arg_wins_over_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The source can be selected via ``SELECT_SOURCE`` without an explicit arg."""
-    monkeypatch.setenv(SELECT_SOURCE_ENV_VAR, "deepseek")
-    monkeypatch.setenv(DEEPSEEK_API_KEY_ENV_VAR, "deepseek-key")
-    monkeypatch.setenv(DEEPSEEK_BASE_URL_ENV_VAR, "https://api.deepseek.com/anthropic")
-    settings = load_llm_settings()
-    assert settings.select_source == SOURCE_DEEPSEEK
-    assert settings.model == DEEPSEEK_MODEL
+    """An explicit ``model=`` key wins over the ``MODEL`` env var."""
+    data = {
+        DEFAULT_MODEL: _qwen_entry(),
+        "deepseek-v4-pro": {
+            "model": "deepseek-v4-pro",
+            "api_key": "deepseek-key",
+        },
+    }
+    path = _write_config(tmp_path, data)
+    monkeypatch.setenv(MODEL_ENV_VAR, "deepseek-v4-pro")
+    settings = load_llm_settings(config_path=path, model=DEFAULT_MODEL)
+    assert settings.model == DEFAULT_MODEL
+    assert settings.api_key == "dummy-key"
 
 
-def test_deepseek_source_missing_api_key_raises(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """DeepSeek mode must fail fast when ``DEEPSEEK_API_KEY`` is unset."""
-    monkeypatch.delenv(DEEPSEEK_API_KEY_ENV_VAR, raising=False)
-    monkeypatch.setenv(DEEPSEEK_BASE_URL_ENV_VAR, "https://api.deepseek.com/anthropic")
-    with pytest.raises(MissingAPIKeyError):
-        load_llm_settings(select_source="deepseek")
+def test_unknown_model_raises(tmp_path: Path) -> None:
+    """A key absent from the registry raises a clear ``ValueError``."""
+    path = _write_config(tmp_path, {DEFAULT_MODEL: _qwen_entry()})
+    with pytest.raises(ValueError, match="gpt-4"):
+        load_llm_settings(config_path=path, model="gpt-4")
 
 
-def test_deepseek_source_missing_base_url_raises(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """DeepSeek mode must fail fast when ``DEEPSEEK_BASE_URL`` is unset."""
-    monkeypatch.setenv(DEEPSEEK_API_KEY_ENV_VAR, "deepseek-key")
-    monkeypatch.delenv(DEEPSEEK_BASE_URL_ENV_VAR, raising=False)
-    with pytest.raises(MissingAPIKeyError):
-        load_llm_settings(select_source="deepseek")
+# ---------------------------------------------------------------------------
+# api_key / base_url binding + error cases
+# ---------------------------------------------------------------------------
 
 
-def test_invalid_select_source_raises() -> None:
-    """An unknown source name must raise a clear ``ValueError``."""
-    with pytest.raises(ValueError):
-        load_llm_settings(api_key="dummy", select_source="gpt")
+def test_api_key_and_base_url_come_from_entry(tmp_path: Path) -> None:
+    """The selected entry's ``api_key`` and ``base_url`` are resolved."""
+    path = _write_config(
+        tmp_path,
+        {DEFAULT_MODEL: _qwen_entry(api_key="real-key", base_url="https://gw.example")},
+    )
+    settings = load_llm_settings(config_path=path)
+    assert settings.api_key == "real-key"
+    assert settings.base_url == "https://gw.example"
 
 
-def test_api_key_is_read_from_environ(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ANTHROPIC_API_KEY in env must be picked up automatically."""
-    monkeypatch.setenv(API_KEY_ENV_VAR, "secret-from-env")
-    settings = load_llm_settings()
-    assert settings.api_key == "secret-from-env"
-
-
-def test_explicit_api_key_overrides_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An explicit api_key argument wins over the env var."""
-    monkeypatch.setenv(API_KEY_ENV_VAR, "secret-from-env")
-    settings = load_llm_settings(api_key="explicit-key")
+def test_explicit_api_key_overrides_entry(tmp_path: Path) -> None:
+    """An explicit ``api_key`` argument wins over the registry value."""
+    path = _write_config(tmp_path, {DEFAULT_MODEL: _qwen_entry(api_key="from-file")})
+    settings = load_llm_settings(config_path=path, api_key="explicit-key")
     assert settings.api_key == "explicit-key"
 
 
-def test_missing_api_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With no env var and no override, a clear error is raised."""
-    monkeypatch.delenv(API_KEY_ENV_VAR, raising=False)
+def test_missing_api_key_raises(tmp_path: Path) -> None:
+    """An entry with no ``api_key`` fails fast with :class:`MissingAPIKeyError`."""
+    path = _write_config(tmp_path, {DEFAULT_MODEL: _qwen_entry(api_key="")})
     with pytest.raises(MissingAPIKeyError):
-        load_llm_settings()
+        load_llm_settings(config_path=path)
 
 
-def test_blank_api_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A whitespace-only env value is treated as missing."""
-    monkeypatch.setenv(API_KEY_ENV_VAR, "   ")
+def test_blank_api_key_raises(tmp_path: Path) -> None:
+    """A whitespace-only ``api_key`` is treated as missing."""
+    path = _write_config(tmp_path, {DEFAULT_MODEL: _qwen_entry(api_key="   ")})
     with pytest.raises(MissingAPIKeyError):
-        load_llm_settings()
+        load_llm_settings(config_path=path)
 
 
-def test_default_temperature_and_max_tokens() -> None:
+def test_missing_config_file_raises(tmp_path: Path) -> None:
+    """A non-existent registry path raises :class:`ModelConfigError`."""
+    with pytest.raises(ModelConfigError, match="not found"):
+        load_llm_settings(config_path=str(tmp_path / "nope.json"))
+
+
+def test_invalid_json_raises(tmp_path: Path) -> None:
+    """Malformed JSON raises :class:`ModelConfigError`."""
+    path = tmp_path / "model.json"
+    path.write_text("{not json", encoding="utf-8")
+    with pytest.raises(ModelConfigError, match="invalid JSON"):
+        load_llm_settings(config_path=str(path))
+
+
+def test_non_object_config_raises(tmp_path: Path) -> None:
+    """A non-object top-level document raises :class:`ModelConfigError`."""
+    path = tmp_path / "model.json"
+    path.write_text("[1, 2, 3]", encoding="utf-8")
+    with pytest.raises(ModelConfigError, match="JSON object"):
+        load_llm_settings(config_path=str(path))
+
+
+# ---------------------------------------------------------------------------
+# sampling defaults + overrides
+# ---------------------------------------------------------------------------
+
+
+def test_default_temperature_and_max_tokens(tmp_path: Path) -> None:
     """Sampling defaults match BaseAgent's baseline."""
-    settings = load_llm_settings(api_key="dummy")
+    path = _write_config(tmp_path, {DEFAULT_MODEL: _qwen_entry()})
+    settings = load_llm_settings(config_path=path)
     assert settings.temperature == DEFAULT_TEMPERATURE == 0.0
     assert settings.max_tokens == DEFAULT_MAX_TOKENS == 32768
 
 
-def test_overrides_apply_per_field() -> None:
+def test_overrides_apply_per_field(tmp_path: Path) -> None:
     """Each scalar field can be overridden independently."""
+    path = _write_config(tmp_path, {DEFAULT_MODEL: _qwen_entry()})
     settings = load_llm_settings(
-        api_key="dummy",
-        model="custom-model",
+        config_path=path,
         temperature=0.7,
         max_tokens=4096,
     )
-    assert settings.model == "custom-model"
     assert settings.temperature == 0.7
     assert settings.max_tokens == 4096
 
 
-def test_settings_is_frozen() -> None:
+def test_settings_is_frozen(tmp_path: Path) -> None:
     """LLMSettings is immutable — protects against accidental mutation."""
-    settings = load_llm_settings(api_key="dummy")
+    path = _write_config(tmp_path, {DEFAULT_MODEL: _qwen_entry()})
+    settings = load_llm_settings(config_path=path)
     with pytest.raises((AttributeError, Exception)):  # FrozenInstanceError
         settings.model = "something-else"  # type: ignore[misc]
 
 
-def test_get_settings_singleton_uses_env(
-    monkeypatch: pytest.MonkeyPatch,
+# ---------------------------------------------------------------------------
+# resolve_subagent_model — flash-tier selection
+# ---------------------------------------------------------------------------
+
+
+def test_subagent_model_returns_flash_model(tmp_path: Path) -> None:
+    """An entry with ``flash_model`` routes sub-agents to the lighter tier."""
+    path = _write_config(
+        tmp_path,
+        {
+            DEFAULT_MODEL: _qwen_entry(flash_model="qwen3.8-flash"),
+            "qwen3.8-flash": _qwen_entry(model="qwen3.8-flash"),
+        },
+    )
+    assert resolve_subagent_model(config_path=path) == "qwen3.8-flash"
+
+
+def test_subagent_model_falls_back_to_model(tmp_path: Path) -> None:
+    """An entry without ``flash_model`` reuses its own model."""
+    path = _write_config(tmp_path, {DEFAULT_MODEL: _qwen_entry()})
+    assert resolve_subagent_model(config_path=path) == DEFAULT_MODEL
+
+
+def test_subagent_model_selected_via_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The module-level accessor reads the env via the same code path."""
-    monkeypatch.setenv(API_KEY_ENV_VAR, "singleton-key")
-    # The cache must be cleared for the test environment to be honored.
+    """``resolve_subagent_model`` honors the ``MODEL`` env var."""
+    data = {
+        DEFAULT_MODEL: _qwen_entry(flash_model="qwen3.8-flash"),
+        "deepseek-v4-pro": {
+            "model": "deepseek-v4-pro",
+            "api_key": "deepseek-key",
+        },
+    }
+    path = _write_config(tmp_path, data)
+    monkeypatch.setenv(MODEL_ENV_VAR, "deepseek-v4-pro")
+    # deepseek has no flash tier → falls back to its own model.
+    assert resolve_subagent_model(config_path=path) == "deepseek-v4-pro"
+
+
+def test_subagent_model_unknown_raises(tmp_path: Path) -> None:
+    """A missing key raises ``ValueError`` from ``resolve_subagent_model``."""
+    path = _write_config(tmp_path, {DEFAULT_MODEL: _qwen_entry()})
+    with pytest.raises(ValueError):
+        resolve_subagent_model(config_path=path, model="gpt-4")
+
+
+# ---------------------------------------------------------------------------
+# singleton accessor + startup log
+# ---------------------------------------------------------------------------
+
+
+def test_get_settings_singleton_uses_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The module-level accessor reads the registry via the same code path."""
     from stock_analysis_agent.conf import settings as settings_module
 
+    path = _write_config(tmp_path, {DEFAULT_MODEL: _qwen_entry(api_key="singleton-key")})
+    monkeypatch.setattr(settings_module, "MODEL_CONFIG_PATH", path)
     settings_module._cached_settings.cache_clear()
     try:
         singleton = get_settings()
@@ -217,16 +316,25 @@ def test_mask_key_empty_redacted() -> None:
 
 
 def test_get_settings_logs_resolved_config(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """``get_settings`` must emit a single INFO line on first build
-    showing model/provider/base_url/masked api_key — so the operator
-    can confirm env vars were inherited by the subprocess."""
+    """``get_settings`` must emit a single INFO line on first build showing
+    model/provider/base_url/masked api_key — so the operator can confirm the
+    right registry entry was resolved."""
     from stock_analysis_agent.conf import settings as settings_module
 
-    monkeypatch.setenv(API_KEY_ENV_VAR, "sk-cp-supersecret-key-12345")
-    monkeypatch.setenv(BASE_URL_ENV_VAR, "https://api.minimaxi.com/anthropic")
+    path = _write_config(
+        tmp_path,
+        {
+            DEFAULT_MODEL: _qwen_entry(
+                api_key="sk-cp-supersecret-key-12345",
+                base_url="https://api.minimaxi.com/anthropic",
+            )
+        },
+    )
+    monkeypatch.setattr(settings_module, "MODEL_CONFIG_PATH", path)
     settings_module._cached_settings.cache_clear()
     caplog.set_level(logging.INFO, logger="stock_analysis_agent.conf.settings")
     try:
@@ -236,7 +344,6 @@ def test_get_settings_logs_resolved_config(
         assert s.api_key == "sk-cp-supersecret-key-12345"
 
         msgs = [r.message for r in caplog.records]
-        # Exactly one config log on first build.
         config_logs = [m for m in msgs if "LLM config:" in m]
         assert len(config_logs) == 1, f"expected 1 LLM config log, got: {msgs!r}"
         line = config_logs[0]
@@ -252,24 +359,25 @@ def test_get_settings_logs_resolved_config(
 
 
 def test_get_settings_logs_unset_base_url(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A missing ``$ANTHROPIC_BASE_URL`` must be surfaced as ``<unset>``
-    in the log so the operator notices before the request goes to the
-    default (real Anthropic) endpoint."""
+    """An entry without ``base_url`` must be surfaced as ``<unset>`` in the
+    log so the operator notices before the request goes to the default
+    (real Anthropic) endpoint."""
     from stock_analysis_agent.conf import settings as settings_module
 
-    monkeypatch.setenv(API_KEY_ENV_VAR, "sk-cp-somekey")
-    monkeypatch.delenv(BASE_URL_ENV_VAR, raising=False)
+    path = _write_config(
+        tmp_path, {DEFAULT_MODEL: _qwen_entry(base_url=None, api_key="sk-cp-somekey")}
+    )
+    monkeypatch.setattr(settings_module, "MODEL_CONFIG_PATH", path)
     settings_module._cached_settings.cache_clear()
     caplog.set_level(logging.INFO, logger="stock_analysis_agent.conf.settings")
     try:
         get_settings()
         line = next(
-            r.message
-            for r in caplog.records
-            if "LLM config:" in r.message
+            r.message for r in caplog.records if "LLM config:" in r.message
         )
         assert "base_url=<unset>" in line
     finally:
@@ -277,6 +385,7 @@ def test_get_settings_logs_unset_base_url(
 
 
 def test_get_settings_does_not_re_log_on_subsequent_calls(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -284,7 +393,8 @@ def test_get_settings_does_not_re_log_on_subsequent_calls(
     should not spam the operator."""
     from stock_analysis_agent.conf import settings as settings_module
 
-    monkeypatch.setenv(API_KEY_ENV_VAR, "sk-cp-once")
+    path = _write_config(tmp_path, {DEFAULT_MODEL: _qwen_entry(api_key="sk-cp-once")})
+    monkeypatch.setattr(settings_module, "MODEL_CONFIG_PATH", path)
     settings_module._cached_settings.cache_clear()
     caplog.set_level(logging.INFO, logger="stock_analysis_agent.conf.settings")
     try:

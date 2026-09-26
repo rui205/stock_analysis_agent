@@ -161,9 +161,12 @@ _TOOL_SPECS: tuple[_ToolSpec, ...] = (
     _ToolSpec(
         "run_analyze_stock",
         (
-            "`str` — verbatim Markdown report produced by the embedded "
-            "`StockAnalysisAgent` subagent, OR an `[ERROR] analyze_stock "
-            "tool failed: ...` string on `ToolExecutionError`."
+            "`str` — the embedded `StockAnalysisAgent` subagent's report: "
+            "a Feishu doc URL (`🔗`) plus a structured field summary "
+            "(verdict / score / valuation / ROE / 毛利率 / 资产负债率 / "
+            "现金流 / 股息率 / 主要风险) for per-criterion matching; OR an "
+            "`[ERROR] analyze_stock tool failed: ...` string on "
+            "`ToolExecutionError`."
         ),
     ),
     _ToolSpec(

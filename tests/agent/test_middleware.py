@@ -3,15 +3,19 @@ from __future__ import annotations
 
 from typing import Any
 
+import anthropic
+import httpx
 import pytest
 from langchain_core.messages import AIMessage, ToolCall, ToolMessage
 
+from stock_analysis_agent.agent.exceptions import ToolExecutionError
 from stock_analysis_agent.agent.middleware import (
     _FeedbackMiddleware,
+    _ModelRetryMiddleware,
     _ToolRetryMiddleware,
+    _is_transient,
     _strip_thinking_blocks,
 )
-from stock_analysis_agent.agent.exceptions import ToolExecutionError
 
 
 def _make_request(call_id: str = "call_1") -> Any:
@@ -356,3 +360,127 @@ def test_strip_thinking_blocks_no_thinking_blocks_is_identity() -> None:
     msg = AIMessage(content=[{"type": "text", "text": "x"}])
     [result] = _strip_thinking_blocks([msg])
     assert result is msg
+
+
+# ---------------------------------------------------------------------------
+# _is_transient — httpx / anthropic network errors are transient
+# ---------------------------------------------------------------------------
+
+
+def test_is_transient_recognizes_httpx_transport_errors() -> None:
+    """``httpx.TransportError`` subclasses (ReadError / ConnectError /
+    RemoteProtocolError / timeouts) are connection-level blips, not
+    business errors — they must classify as transient."""
+    assert _is_transient(httpx.ReadError("connection reset"))
+    assert _is_transient(httpx.ConnectError("connect failed"))
+    assert _is_transient(httpx.RemoteProtocolError("peer closed"))
+    assert _is_transient(httpx.ReadTimeout("read timeout"))
+
+
+def test_is_transient_recognizes_anthropic_connection_errors() -> None:
+    """``anthropic.APIConnectionError`` / ``APITimeoutError`` (SDK-wrapped
+    network failures on the non-streaming path) must classify as transient."""
+    request = httpx.Request("POST", "https://api.anthropic.com")
+    assert _is_transient(anthropic.APIConnectionError(message="down", request=request))
+    assert _is_transient(anthropic.APITimeoutError(request=request))
+
+
+def test_is_transient_rejects_business_errors() -> None:
+    """A plain ValueError must NOT be classified transient."""
+    assert not _is_transient(ValueError("bad input"))
+
+
+# ---------------------------------------------------------------------------
+# _ModelRetryMiddleware — retry transient model-call errors
+# ---------------------------------------------------------------------------
+
+
+def test_model_retry_transient_error_retried_then_raises() -> None:
+    """A transient model-call error is retried up to ``max_retries``; when
+    all attempts fail the original exception is re-raised (NOT wrapped in
+    ``ToolExecutionError`` — that wrapper is reserved for tool calls)."""
+    mw = _ModelRetryMiddleware(max_retries=2, initial_delay=0.0, backoff_factor=0.0)
+    calls = {"n": 0}
+
+    def handler(req):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        raise httpx.ReadError("connection reset")
+
+    with pytest.raises(httpx.ReadError):
+        mw.wrap_model_call(object(), handler)
+
+    assert calls["n"] == 3  # 1 initial + 2 retries
+
+
+def test_model_retry_transient_error_recovers() -> None:
+    """A transient error that clears on the second attempt returns the
+    handler result instead of aborting the run."""
+    mw = _ModelRetryMiddleware(max_retries=2, initial_delay=0.0, backoff_factor=0.0)
+    calls = {"n": 0}
+    expected = "ok"
+
+    def handler(req):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ReadError("connection reset")
+        return expected
+
+    assert mw.wrap_model_call(object(), handler) == expected
+    assert calls["n"] == 2
+
+
+def test_model_retry_business_error_not_retried() -> None:
+    """A non-transient error (e.g. ValueError) propagates immediately with
+    no retry attempt."""
+    mw = _ModelRetryMiddleware(max_retries=2, initial_delay=0.0, backoff_factor=0.0)
+    calls = {"n": 0}
+
+    def handler(req):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        raise ValueError("bad input")
+
+    with pytest.raises(ValueError):
+        mw.wrap_model_call(object(), handler)
+
+    assert calls["n"] == 1
+
+
+def test_model_retry_keyboard_interrupt_propagates() -> None:
+    """``KeyboardInterrupt`` must escape the model retry layer unwrapped."""
+    mw = _ModelRetryMiddleware(max_retries=2, initial_delay=0.0, backoff_factor=0.0)
+
+    def handler(req):  # type: ignore[no-untyped-def]
+        raise KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        mw.wrap_model_call(object(), handler)
+
+
+def test_model_retry_zero_retries_single_attempt() -> None:
+    """``max_retries=0`` means no retries; the first failure raises."""
+    mw = _ModelRetryMiddleware(max_retries=0, initial_delay=0.0, backoff_factor=0.0)
+    calls = {"n": 0}
+
+    def handler(req):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        raise httpx.ReadError("connection reset")
+
+    with pytest.raises(httpx.ReadError):
+        mw.wrap_model_call(object(), handler)
+
+    assert calls["n"] == 1
+
+
+async def test_model_retry_transient_error_recovers_async() -> None:
+    """Async path mirrors the sync transient-retry-and-recover behavior."""
+    mw = _ModelRetryMiddleware(max_retries=2, initial_delay=0.0, backoff_factor=0.0)
+    calls = {"n": 0}
+
+    async def handler(req):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ReadError("connection reset")
+        return "ok"
+
+    assert await mw.awrap_model_call(object(), handler) == "ok"
+    assert calls["n"] == 2

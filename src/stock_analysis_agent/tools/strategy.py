@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from stock_analysis_agent.agent.stock_analysis import StockAnalysisAgent
 from stock_analysis_agent.agent.stream import collect_final_text
+from stock_analysis_agent.conf.settings import resolve_subagent_model
 from stock_analysis_agent.memory.file_cache import _FileCache
 from stock_analysis_agent.tools._paths import PACKAGE_ROOT
 from stock_analysis_agent.tools.prompt import render_system_prompt
@@ -49,6 +50,25 @@ _TECHNICAL_CAPITAL_PROMPT_FILE: Path = PACKAGE_ROOT / "prompts" / "technical_cap
 #: surface as ``script.analyze_stock`` minus the orchestrator tools.
 _TECHNICAL_CAPITAL_TOOL_NAMES: tuple[str, ...] = ("load_skill", "read_file", "run_command")
 
+#: Absolute path to the strategy-match analyze-stock sub-agent prompt template.
+#: This is a *distinct* prompt from ``prompts/system_prompt.md`` (the
+#: user-facing stock-analyst): the sub-agent must return a structured field
+#: summary to the orchestrator instead of only a Feishu link + one-liner, so
+#: the orchestrator has fundamentals to match against without re-fetching via
+#: ``run_deepresearch``.
+_STRATEGY_MATCH_STOCK_ANALYSIS_PROMPT_FILE: Path = (
+    PACKAGE_ROOT / "prompts" / "strategy_match_stock_analysis_system_prompt.md"
+)
+
+#: Tool names exposed to the strategy-match analyze-stock sub-agent — the
+#: same surface as the technical-capital sub-agent (``load_skill`` /
+#: ``read_file`` / ``run_command``, shell always on for the mx-* data scripts).
+_STRATEGY_MATCH_STOCK_ANALYSIS_TOOL_NAMES: tuple[str, ...] = (
+    "load_skill",
+    "read_file",
+    "run_command",
+)
+
 #: Frontmatter keys the strategy schema recognises. Anything else
 #: (e.g. ``tags:`` in ``value-investing.md``) is dropped by
 #: :func:`_parse_strategy_frontmatter` so the report sees only the
@@ -61,7 +81,11 @@ _STRATEGY_FRONTMATTER_KEYS: frozenset[str] = frozenset({"name", "version", "desc
 #: write failures degrade silently — caching is an optimization, not a
 #: correctness layer.
 _SUBAGENT_CACHE_DIR = Path("~/.cache/stock-analysis-agent/subagent-reports").expanduser()
-_SUBAGENT_CACHE_TTL: float = 3600.0  # 1 hour
+#: Cache TTL for sub-agent reports. Financial fundamentals are daily/quarterly
+#: frequency, so a multi-hour window (24h, matching the web_search cache) is safe
+#: and lets a repeated evaluation of the same symbol hit the cache instead of
+#: re-paying the full sub-agent run.
+_SUBAGENT_CACHE_TTL: float = 86400.0  # 24 hours
 
 _subagent_cache = _FileCache(_SUBAGENT_CACHE_DIR, ttl_seconds=_SUBAGENT_CACHE_TTL)
 
@@ -77,10 +101,15 @@ def _cache_query(
     The shell flag is part of the key because it changes the sub-agent's
     output contract (shell-enabled runs execute the mx-* data scripts;
     without it the report degrades to LLM-knowledge-only).
+
+    The dimension list is sorted before joining so the cache key is
+    order-insensitive — the orchestrator may pass the same set of research
+    dimensions in a different order across calls, and both should hit the
+    same cached report.
     """
     if dimensions is None:
         return f"{shell}|{symbol}"
-    return f"{shell}|{symbol}|{'、'.join(dimensions)}"
+    return f"{shell}|{symbol}|{'、'.join(sorted(dimensions))}"
 
 
 def _list_strategy_names() -> tuple[str, ...]:
@@ -163,13 +192,16 @@ def load_strategy(name: str) -> str:
 def _run_subagent_and_collect(symbol: str) -> str:
     """Inner helper — builds the subagent, runs it, returns the final text.
 
-    The sub-agent is driven by the same ``prompts/system_prompt.md`` as
-    ``script.analyze_stock``; per the bundled ``stock-analysis`` skill,
-    its final text is a Markdown report. We return it verbatim — no
-    parsing, no remapping.
+    The sub-agent is driven by a *dedicated* prompt
+    (``prompts/strategy_match_stock_analysis_system_prompt.md``), not the
+    user-facing ``prompts/system_prompt.md``. The user-facing prompt tells
+    the sub-agent to publish to Feishu and reply with only a link + one-liner;
+    that would starve the orchestrator of fundamentals and force it to re-fetch
+    everything via ``run_deepresearch``. The dedicated prompt keeps the same
+    stock-analysis workflow but adds a structured field-summary return, so the
+    orchestrator can match strategy principles directly. We return the final
+    text verbatim — no parsing, no remapping.
     """
-    from stock_analysis_agent.script.analyze_stock import _load_system_prompt
-
     # The sub-agent always runs with ``run_command``: the bundled
     # stock-analysis workflow executes its mx-* skill scripts via shell
     # and publishes the report to Feishu (lark-cli), both of which
@@ -181,10 +213,14 @@ def _run_subagent_and_collect(symbol: str) -> str:
     if cached is not None:
         return cached
 
-    system_prompt = _load_system_prompt(include_shell_tool=shell_enabled)
+    system_prompt = _load_strategy_match_stock_analysis_prompt()
     sub = StockAnalysisAgent(
         system_prompt=system_prompt,
         include_shell_tool=shell_enabled,
+        # Mechanical data-fetch sub-agent → the cheaper flash tier (qwen).
+        # The reasoning-heavy agents (deepresearch, orchestrator) stay on
+        # the source's default model.
+        model=resolve_subagent_model(),
         # Shell-enabled runs execute the full mx-* workflow: each data
         # fetch costs ~4 graph steps (run_command + read_file, each
         # preceded by an LLM decision round) plus skill loads and
@@ -218,28 +254,32 @@ class RunAnalyzeStockInput(BaseModel):
 @tool(
     "run_analyze_stock",
     description=(
-        "Run the existing `StockAnalysisAgent` subagent on a stock "
-        "symbol and return its Markdown analysis verbatim. Returns the "
-        "Markdown report on success; an `[ERROR] analyze_stock tool "
+        "Run the `StockAnalysisAgent` subagent on a stock symbol and return "
+        "its report verbatim: a Feishu doc URL (`🔗`) plus a structured "
+        "field summary (verdict / score / valuation / ROE / 毛利率 / 资产负债率 "
+        "/ 现金流 / 股息率 / 主要风险) for per-criterion strategy matching. "
+        "Returns the report on success; an `[ERROR] analyze_stock tool "
         "failed: ...` string when the sub-agent run fails (tool retries "
         "exhausted or recursion budget exceeded)."
     ),
     args_schema=RunAnalyzeStockInput,
 )
 def run_analyze_stock(symbol: str) -> str:
-    """Synchronously run the analyze-stock subagent and forward its Markdown output.
+    """Synchronously run the analyze-stock subagent and forward its output.
 
-    The sub-agent emits Markdown directly (per ``prompts/system_prompt.md`` +
-    the bundled ``stock-analysis`` skill). No JSON parsing or remapping is
-    performed here — the caller decides how to consume the report.
+    The sub-agent is driven by ``prompts/strategy_match_stock_analysis_system_prompt.md``
+    (the stock-analysis workflow plus a structured field-summary return). No
+    JSON parsing or remapping is performed here — the caller decides how to
+    consume the report.
 
     Args:
         symbol: Stock symbol, e.g. ``"600519.SH"``.
 
     Returns:
-        The sub-agent's final Markdown text on success, or an ``[ERROR]``-prefixed
-        string when the sub-agent's tool retries are exhausted or its
-        graph runs out of recursion budget mid-workflow.
+        The sub-agent's final text on success (Feishu URL + structured field
+        summary), or an ``[ERROR]``-prefixed string when the sub-agent's tool
+        retries are exhausted or its graph runs out of recursion budget
+        mid-workflow.
     """
     try:
         return _run_subagent_and_collect(symbol)
@@ -357,6 +397,28 @@ def _load_technical_capital_prompt() -> str:
     )
 
 
+def _load_strategy_match_stock_analysis_prompt() -> str:
+    """Load and render the strategy-match analyze-stock sub-agent prompt.
+
+    Mirrors :func:`_load_technical_capital_prompt`: injects the full skill
+    catalog (``<!-- SKILL_INDEX -->``) and the sub-agent's own tool catalog
+    (``<!-- TOOL_INDEX -->``) into
+    ``prompts/strategy_match_stock_analysis_system_prompt.md``. The template's
+    output contract overrides the stock-analysis skill's "link only" rule so
+    the sub-agent returns a structured field summary to the orchestrator.
+
+    Returns:
+        The rendered system prompt for the strategy-match analyze-stock
+        sub-agent.
+    """
+    return render_system_prompt(
+        _STRATEGY_MATCH_STOCK_ANALYSIS_PROMPT_FILE,
+        tool_names=list(_STRATEGY_MATCH_STOCK_ANALYSIS_TOOL_NAMES),
+        catalog_placeholder="<!-- SKILL_INDEX -->",
+        catalog_doc=format_skill_index_markdown(get_skill_index()),
+    )
+
+
 def _run_technical_capital_and_collect(symbol: str) -> str:
     """Run the technical-capital sub-agent and return its final Markdown text.
 
@@ -376,6 +438,8 @@ def _run_technical_capital_and_collect(symbol: str) -> str:
     sub = StockAnalysisAgent(
         system_prompt=system_prompt,
         include_shell_tool=shell_enabled,
+        # Mechanical data-fetch sub-agent → the cheaper flash tier (qwen).
+        model=resolve_subagent_model(),
         # Same budget as the analyze-stock sub-agent: the mx-* skill data
         # fetches each cost ~4 graph steps and exhaust smaller budgets.
         recursion_limit=100,

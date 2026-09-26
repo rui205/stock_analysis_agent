@@ -19,9 +19,13 @@ from stock_analysis_agent.agent.strategy_match_schema import (
     StrategyMatchReport,
 )
 from stock_analysis_agent.script.evaluate_strategy import (
+    _build_parser,
     _extract_feishu_doc_url,
+    _handle_parse_failure,
     _publish_to_feishu,
+    _write_raw_output,
     render_local_markdown,
+    ReportParseError,
 )
 
 
@@ -170,3 +174,175 @@ class TestRenderLocalMarkdown:
         report = _make_report()
         md = render_local_markdown(report, "2026-08-29")
         assert "🔗 完整报告" not in md
+
+
+class TestModelArg:
+    """The ``--model`` flag selects a model.json entry; default is 千问."""
+
+    def test_parser_model_defaults_to_none(self) -> None:
+        args = _build_parser().parse_args(
+            ["600887.SH", "--strategy", "value-investing"]
+        )
+        assert args.model is None
+
+    def test_parser_accepts_model(self) -> None:
+        args = _build_parser().parse_args(
+            ["600887.SH", "--strategy", "value-investing", "--model", "deepseek-v4-pro"]
+        )
+        assert args.model == "deepseek-v4-pro"
+
+    def test_run_sets_model_env_when_provided(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        import os
+        from types import SimpleNamespace
+
+        import stock_analysis_agent.script.evaluate_strategy as mod
+
+        monkeypatch.setattr(mod, "_validate_strategy", lambda name: None)
+        monkeypatch.setattr(mod, "_run_agent_and_parse", lambda args: _make_report())
+        monkeypatch.setattr(mod, "_publish_to_feishu", lambda md: None)
+        monkeypatch.delenv("MODEL", raising=False)
+
+        args = SimpleNamespace(
+            symbol="600887.SH",
+            strategy="value-investing",
+            delivery="local",
+            include_shell_tool=False,
+            recursion_limit=80,
+            output_dir=tmp_path,
+            model="deepseek-v4-pro",
+            verbose=False,
+        )
+        assert mod.run(args) == mod.EXIT_OK
+        assert os.environ["MODEL"] == "deepseek-v4-pro"
+
+    def test_run_does_not_set_model_env_when_omitted(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        import os
+        from types import SimpleNamespace
+
+        import stock_analysis_agent.script.evaluate_strategy as mod
+
+        monkeypatch.setattr(mod, "_validate_strategy", lambda name: None)
+        monkeypatch.setattr(mod, "_run_agent_and_parse", lambda args: _make_report())
+        monkeypatch.setattr(mod, "_publish_to_feishu", lambda md: None)
+        monkeypatch.delenv("MODEL", raising=False)
+
+        args = SimpleNamespace(
+            symbol="600887.SH",
+            strategy="value-investing",
+            delivery="local",
+            include_shell_tool=False,
+            recursion_limit=80,
+            output_dir=tmp_path,
+            model=None,
+            verbose=False,
+        )
+        assert mod.run(args) == mod.EXIT_OK
+        # Omitted → no MODEL override → settings falls back to 千问.
+        assert "MODEL" not in os.environ
+
+
+class TestRunAgentAndParseFailure:
+    """Parsing failures surface raw output instead of silently discarding."""
+
+    def test_raises_report_parse_error_with_raw_text(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        import stock_analysis_agent.script.evaluate_strategy as es
+
+        raw = "agent output with no json object"
+        fake_events = [
+            {
+                "event": "on_chat_model_stream",
+                "data": {"chunk": SimpleNamespace(content=raw)},
+            }
+        ]
+
+        class _FakeAgent:
+            def __init__(self, **kwargs: Any) -> None:
+                pass
+
+            def stream(self, messages: Any) -> Any:
+                return iter(fake_events)
+
+        monkeypatch.setattr(es, "_load_system_prompt", lambda **kw: "dummy")
+        monkeypatch.setattr(es, "StrategyMatchAgent", _FakeAgent)
+
+        args = SimpleNamespace(
+            symbol="600887.SH",
+            strategy="value-investing",
+            include_shell_tool=False,
+            recursion_limit=80,
+        )
+        with pytest.raises(ReportParseError) as excinfo:
+            es._run_agent_and_parse(args)
+        assert excinfo.value.last_text == raw
+
+
+class TestHandleParseFailure:
+    """Interactive / non-interactive recovery from a failed report parse."""
+
+    def _make_args(self, tmp_path):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            symbol="600887.SH", strategy="value-investing", output_dir=tmp_path
+        )
+
+    def test_interactive_yes_saves_and_returns_ok(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        import stock_analysis_agent.script.evaluate_strategy as es
+
+        monkeypatch.setattr(es.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda prompt: "y")
+        args = self._make_args(tmp_path)
+
+        assert (
+            _handle_parse_failure(ReportParseError("raw agent output {"), args)
+            == es.EXIT_OK
+        )
+        files = list(tmp_path.glob("strategy-match-*-raw.md"))
+        assert len(files) == 1
+        assert "raw agent output" in files[0].read_text(encoding="utf-8")
+
+    def test_interactive_no_returns_parse(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        import stock_analysis_agent.script.evaluate_strategy as es
+
+        monkeypatch.setattr(es.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda prompt: "n")
+        args = self._make_args(tmp_path)
+
+        assert (
+            _handle_parse_failure(ReportParseError("raw {"), args) == es.EXIT_PARSE
+        )
+        assert list(tmp_path.glob("strategy-match-*-raw.md")) == []
+
+    def test_non_interactive_saves_and_returns_parse(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        import stock_analysis_agent.script.evaluate_strategy as es
+
+        monkeypatch.setattr(es.sys.stdin, "isatty", lambda: False)
+        args = self._make_args(tmp_path)
+
+        assert (
+            _handle_parse_failure(ReportParseError("raw {"), args) == es.EXIT_PARSE
+        )
+        files = list(tmp_path.glob("strategy-match-*-raw.md"))
+        assert len(files) == 1
+
+
+class TestWriteRawOutput:
+    def test_writes_raw_markdown_file(self, tmp_path) -> None:
+        path = _write_raw_output("hello raw", "600887.SH", tmp_path)
+        assert path.name.startswith("strategy-match-600887_SH-")
+        assert path.name.endswith("-raw.md")
+        assert path.read_text(encoding="utf-8") == "hello raw"

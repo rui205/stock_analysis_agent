@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -24,9 +25,10 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, get_args, get_origin
 
 from langchain_core.messages import BaseMessage, HumanMessage
+from pydantic import BaseModel
 
 from stock_analysis_agent.agent.exceptions import ToolExecutionError
 from stock_analysis_agent.agent.strategy_match import StrategyMatchAgent
@@ -54,6 +56,20 @@ _OUTPUT_DIR_NAME = "output"
 
 class UnknownStrategyError(ValueError):
     """Raised when ``--strategy`` names a strategy with no ``.md`` file."""
+
+
+class ReportParseError(ValueError):
+    """The agent's final output failed structured validation.
+
+    Carries ``last_text`` — the agent's raw streamed output — so the caller
+    can retain it (save to disk / surface to the user) instead of silently
+    discarding it when the report cannot be parsed into
+    :class:`StrategyMatchReport`.
+    """
+
+    def __init__(self, last_text: str) -> None:
+        super().__init__("agent output failed StrategyMatchReport validation")
+        self.last_text = last_text
 
 
 #: Tool names exposed to ``StrategyMatchAgent`` (the orchestrator) —
@@ -181,6 +197,89 @@ def _extract_json_object(text: str) -> str:
     if not candidates:
         raise ValueError("no JSON object found in agent output")
     return max(candidates, key=len)
+
+
+def _field_max_length(field_info: Any) -> int | None:
+    """Return the ``max_length`` constraint on a pydantic field, or ``None``.
+
+    pydantic v2 stores bounds like ``Field(max_length=500)`` as ``MaxLen``
+    entries in ``FieldInfo.metadata``; reading them here (instead of
+    hardcoding the limits) keeps the repair step in sync with the schema.
+    """
+    for constraint in field_info.metadata:
+        max_len = getattr(constraint, "max_length", None)
+        if max_len is not None:
+            return max_len
+    return None
+
+
+def _truncate_overlong_fields(
+    model: type[BaseModel], data: dict[str, Any]
+) -> dict[str, Any]:
+    """Clip string fields in ``data`` to their schema ``max_length``.
+
+    The strategy-match LLM occasionally over-generates ``evidence`` /
+    ``reasoning`` beyond the bounds declared in
+    :class:`~stock_analysis_agent.agent.strategy_match_schema.StrategyCriterionMatch`.
+    Rather than discard the entire report on a single over-long field
+    (``EXIT_PARSE``), clip each bounded string here at the parse boundary.
+    The schema itself stays strict for programmatic callers.
+
+    Args:
+        model: The pydantic model whose field constraints define the limits.
+        data: The parsed JSON object to normalize (not mutated — a new dict
+            is returned).
+
+    Returns:
+        A copy of ``data`` with every bounded ``str`` truncated to its
+        schema ``max_length``. Unbounded fields and non-str values are left
+        untouched; nested models and lists of models are descended into.
+    """
+    out: dict[str, Any] = {}
+    for name, field_info in model.model_fields.items():
+        if name not in data:
+            continue
+        value = data[name]
+        annotation = field_info.annotation
+        origin = get_origin(annotation)
+
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            out[name] = (
+                _truncate_overlong_fields(annotation, value)
+                if isinstance(value, dict)
+                else value
+            )
+        elif origin is list:
+            item_types = get_args(annotation)
+            item_type = item_types[0] if item_types else None
+            if isinstance(item_type, type) and issubclass(item_type, BaseModel):
+                out[name] = (
+                    [
+                        _truncate_overlong_fields(item_type, v)
+                        if isinstance(v, dict)
+                        else v
+                        for v in value
+                    ]
+                    if isinstance(value, list)
+                    else value
+                )
+            else:
+                out[name] = value
+        elif isinstance(value, str):
+            max_len = _field_max_length(field_info)
+            if max_len is not None and len(value) > max_len:
+                logger.warning(
+                    "truncating field %r from %d to %d chars",
+                    name,
+                    len(value),
+                    max_len,
+                )
+                out[name] = value[:max_len]
+            else:
+                out[name] = value
+        else:
+            out[name] = value
+    return out
 
 
 def build_output_path(symbol: str, output_dir_path: Path, now_epoch: int | None = None) -> Path:
@@ -364,6 +463,13 @@ def _build_parser() -> argparse.ArgumentParser:
             "subagent plus up to 3 deep-research fallback calls)."
         ),
     )
+    parser.add_argument(
+        "--model", default=None,
+        help=(
+            "Model id to use — a key in model.json (e.g. deepseek-v4-pro). "
+            "Defaults to qwen3.8-max (千问) when omitted."
+        ),
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable DEBUG-level logging.")
     return parser
 
@@ -392,14 +498,78 @@ def _run_agent_and_parse(args: argparse.Namespace) -> StrategyMatchReport:
     last_text = collect_final_text(agent.stream(messages))
     try:
         json_str = _extract_json_object(_strip_code_fence(last_text))
-        return StrategyMatchReport.model_validate_json(json_str)
-    except ValueError:
+        data = json.loads(json_str)
+        data = _truncate_overlong_fields(StrategyMatchReport, data)
+        return StrategyMatchReport.model_validate(data)
+    except ValueError as e:
         logger.debug("raw output: %s", last_text[:2000])
-        raise
+        raise ReportParseError(last_text=last_text) from e
+
+
+def _write_raw_output(raw_text: str, symbol: str, out_dir: Path) -> Path:
+    """Write the agent's raw output to ``out_dir`` when parsing fails.
+
+    Uses the same ``strategy-match-<symbol>-<ts>.md`` naming as
+    :func:`build_output_path`, with a ``-raw`` suffix so the artifact is not
+    mistaken for a validated report.
+
+    Args:
+        raw_text: The agent's raw streamed text.
+        symbol: Stock code, used only for the filename.
+        out_dir: Directory to write into (created if missing).
+
+    Returns:
+        The path the raw output was written to.
+    """
+    ts = int(time.time())
+    safe_symbol = symbol.replace(".", "_").replace("/", "_")
+    path = out_dir / f"strategy-match-{safe_symbol}-{ts}-raw.md"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(raw_text, encoding="utf-8")
+    return path
+
+
+def _handle_parse_failure(exc: ReportParseError, args: argparse.Namespace) -> int:
+    """Recover from a report that failed structured validation.
+
+    The agent's raw text is retained rather than discarded. On an interactive
+    terminal the user chooses whether to save it; otherwise (CI, background,
+    pipes) it is saved automatically but the parse-failure exit code is kept
+    so automation still detects that the report did not validate.
+
+    Args:
+        exc: The parse failure carrying the agent's raw output.
+        args: Parsed CLI arguments (``output_dir`` / ``symbol``).
+
+    Returns:
+        ``EXIT_OK`` when the user chose to save the raw output and continue,
+        ``EXIT_PARSE`` otherwise.
+    """
+    logger.error("%s", exc)
+    logger.info("agent raw output retained (%d chars)", len(exc.last_text))
+    out_dir = args.output_dir or output_dir()
+
+    if not sys.stdin.isatty():
+        path = _write_raw_output(exc.last_text, args.symbol, out_dir)
+        logger.warning("saved raw agent output to %s (parse failed)", path)
+        return EXIT_PARSE
+
+    answer = input(
+        "报告解析失败。是否将 agent 原始输出保存到 output/ 并继续？[y/N] "
+    ).strip().lower()
+    if answer not in ("y", "yes"):
+        return EXIT_PARSE
+    path = _write_raw_output(exc.last_text, args.symbol, out_dir)
+    logger.info("saved raw agent output to %s", path)
+    return EXIT_OK
 
 
 def run(args: argparse.Namespace) -> int:
     """Top-level orchestration. Returns the process exit code."""
+    # Model selection: an explicit ``--model`` overrides the process default;
+    # when omitted, the settings loader falls back to DEFAULT_MODEL (千问).
+    if args.model:
+        os.environ["MODEL"] = args.model
     _validate_strategy(args.strategy)
 
     try:
@@ -412,9 +582,8 @@ def run(args: argparse.Namespace) -> int:
         suffix = f" (cause: {type(cause).__name__})" if cause is not None else ""
         logger.error("agent tools failed: %s%s", e, suffix)
         return EXIT_TOOL
-    except ValueError as e:
-        logger.error("agent output failed StrategyMatchReport validation: %s", e)
-        return EXIT_PARSE
+    except ReportParseError as e:
+        return _handle_parse_failure(e, args)
 
     out_dir = args.output_dir or output_dir()
     now_iso = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")

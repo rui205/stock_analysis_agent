@@ -9,6 +9,8 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
+import anthropic
+import httpx
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
 
@@ -22,13 +24,28 @@ if TYPE_CHECKING:
 _TRANSIENT_EXCEPTIONS: tuple[type[BaseException], ...] = (
     TimeoutError,
     ConnectionError,
+    # httpx.TransportError covers ReadError / ConnectError / RemoteProtocolError
+    # / CloseError / all timeouts — the connection-level failures that can drop
+    # a streaming response mid-body.
+    httpx.TransportError,
+)
+
+# anthropic SDK-wrapped connection failures on the non-streaming path. The
+# streaming path surfaces raw httpx errors (covered above); `ainvoke` /
+# `agenerate` can surface these instead.
+_ANTHROPIC_TRANSIENT: tuple[type[BaseException], ...] = (
+    anthropic.APIConnectionError,
+    anthropic.APITimeoutError,
 )
 
 
 def _is_transient(exc: BaseException) -> bool:
-    """A best-effort check: built-in transient types OR an `httpx` /
-    `anthropic` exception whose class name contains 'Timeout' or 'Rate'."""
+    """A best-effort check: built-in transient types, ``httpx`` transport
+    errors, ``anthropic`` connection errors, OR any exception whose class
+    name contains 'Timeout' / 'Rate' (fallback for provider-specific types)."""
     if isinstance(exc, _TRANSIENT_EXCEPTIONS):
+        return True
+    if isinstance(exc, _ANTHROPIC_TRANSIENT):
         return True
     cls_name = type(exc).__name__.lower()
     return any(token in cls_name for token in ("timeout", "ratelimit", "rate_limit"))
@@ -398,3 +415,125 @@ class _StripThinkingMiddleware(AgentMiddleware):
         return await handler(
             request.override(messages=_strip_thinking_blocks(request.messages))
         )
+
+
+class _ModelRetryMiddleware(AgentMiddleware):
+    """Retry the LLM call itself on transient network errors with backoff.
+
+    :class:`_ToolRetryMiddleware` guards tool calls; this middleware guards
+    the model call. A long streaming response can be dropped mid-body by an
+    intermediate gateway/proxy (surfacing as ``httpx.ReadError``) — without
+    this layer that transient failure aborts the entire run. On exhausting
+    ``max_retries`` the original exception is re-raised as-is (NOT wrapped in
+    ``ToolExecutionError`` — that wrapper is reserved for tool calls).
+
+    Only exceptions classified transient by :func:`_is_transient` are retried;
+    anything else (a 4xx schema error, a bad argument, …) propagates on the
+    first attempt so it isn't masked by pointless retries.
+    """
+
+    def __init__(
+        self,
+        max_retries: int = 2,
+        *,
+        initial_delay: float = 1.0,
+        backoff_factor: float = 2.0,
+        max_delay: float = 30.0,
+    ) -> None:
+        self.max_retries = max_retries
+        self.initial_delay = initial_delay
+        self.backoff_factor = backoff_factor
+        self.max_delay = max_delay
+
+    def wrap_model_call(
+        self, request: "ModelRequest", handler: Callable[..., Any]
+    ) -> Any:
+        """Sync path: retry the model call on transient errors."""
+        return _retry_model_call(
+            handler,
+            request,
+            max_retries=self.max_retries,
+            initial_delay=self.initial_delay,
+            backoff_factor=self.backoff_factor,
+            max_delay=self.max_delay,
+            sleep_fn=time.sleep,
+        )
+
+    async def awrap_model_call(
+        self, request: "ModelRequest", handler: Callable[..., Any]
+    ) -> Any:
+        """Async path: retry the model call on transient errors."""
+        return await _aretry_model_call(
+            handler,
+            request,
+            max_retries=self.max_retries,
+            initial_delay=self.initial_delay,
+            backoff_factor=self.backoff_factor,
+            max_delay=self.max_delay,
+            sleep_fn=asyncio.sleep,
+        )
+
+
+def _retry_model_call(
+    handler: Callable[..., Any],
+    request: "ModelRequest",
+    *,
+    max_retries: int,
+    initial_delay: float,
+    backoff_factor: float,
+    max_delay: float,
+    sleep_fn: Callable[[float], Any],
+) -> Any:
+    """Retry ``handler`` up to ``max_retries`` times on transient errors.
+
+    Unlike :func:`_retry_loop`, the final failure is NOT wrapped in
+    ``ToolExecutionError`` — a model-call failure propagates as its original
+    exception so the agent's stream machinery (not the tool feedback layer)
+    handles it. Only ``Exception`` subclasses are caught; ``KeyboardInterrupt``
+    / ``SystemExit`` propagate.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            return handler(request)
+        except Exception as exc:  # noqa: BLE001 — retry layer by design
+            last_exc = exc
+            if not _is_transient(exc):
+                raise
+            if attempt < max_retries:
+                delay = _compute_backoff(
+                    attempt, initial_delay, backoff_factor, max_delay
+                )
+                if delay > 0:
+                    sleep_fn(delay)
+    assert last_exc is not None  # for type-checkers
+    raise last_exc
+
+
+async def _aretry_model_call(
+    handler: Callable[..., Any],
+    request: "ModelRequest",
+    *,
+    max_retries: int,
+    initial_delay: float,
+    backoff_factor: float,
+    max_delay: float,
+    sleep_fn: Callable[[float], Any],
+) -> Any:
+    """Async counterpart of :func:`_retry_model_call`."""
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            return await handler(request)
+        except Exception as exc:  # noqa: BLE001 — retry layer by design
+            last_exc = exc
+            if not _is_transient(exc):
+                raise
+            if attempt < max_retries:
+                delay = _compute_backoff(
+                    attempt, initial_delay, backoff_factor, max_delay
+                )
+                if delay > 0:
+                    await sleep_fn(delay)
+    assert last_exc is not None  # for type-checkers
+    raise last_exc

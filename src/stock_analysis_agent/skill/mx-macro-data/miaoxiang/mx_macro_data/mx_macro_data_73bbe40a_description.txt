@@ -1,0 +1,26 @@
+宏观数据查询结果说明
+========================================
+查询内容: 查询中国 CPI 同比、食品CPI同比、社会消费品零售总额同比 近24个月
+数据频率组数: 2
+
+各频率数据统计:
+  - yearly: 2 行
+  - monthly: 3 行
+
+生成的文件:
+  - mx_macro_data_73bbe40a_yearly.csv
+  - mx_macro_data_73bbe40a_monthly.csv
+
+详细说明:
+实体名称 [yearly]: 宏观数据（年）
+标题 [yearly]: 2024至2025的宏观数据（年）
+单位 [yearly]: (%)
+实体名称 [monthly]: 宏观数据（月）
+标题 [monthly]: 2024-09至2026-08的宏观数据（月）
+单位 [monthly]: (%)
+实体名称 [monthly]: CPI（月）
+标题 [monthly]: 2024-09至2026-08的CPI（月）
+
+数据源信息:
+接口: https://ai-saas.eastmoney.com/proxy/b/mcp/tool/searchMacroData
+查询时间: 2026-09-15 08:43:14

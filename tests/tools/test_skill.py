@@ -13,7 +13,6 @@ import pytest
 from stock_analysis_agent.tools.skill import (
     _parse_frontmatter,
     _read_skill,
-    format_skill_index_markdown,
     get_skill_index,
     list_skill_names,
     load_skill,

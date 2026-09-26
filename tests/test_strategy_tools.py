@@ -158,6 +158,37 @@ class TestRunAnalyzeStockTool:
         assert "analyze_stock" in out
         assert "simulated" in out
 
+    def test_subagent_uses_structured_return_prompt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The sub-agent gets the dedicated strategy-match prompt (structured
+        field-summary return), NOT the user-facing 'link only' prompt.
+
+        This is the fix for the orchestrator being starved of fundamentals and
+        firing ``run_deepresearch`` to re-fetch data ``run_analyze_stock``
+        already had.
+        """
+        fake_sub = MagicMock()
+        fake_sub.stream.return_value = iter([])
+        fake_cls = MagicMock(return_value=fake_sub)
+        import stock_analysis_agent.tools.strategy as mod
+        monkeypatch.setattr(mod, "StockAnalysisAgent", fake_cls)
+        run_analyze_stock.invoke({"symbol": "600519.SH"})
+        fake_cls.assert_called_once()
+        system_prompt = fake_cls.call_args.kwargs["system_prompt"]
+        assert "策略匹配字段" in system_prompt
+        assert "结构化字段摘要" in system_prompt
+
+    def test_subagent_uses_flash_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """analyze_stock sub-agent runs on the flash tier, not the default max."""
+        fake_sub = MagicMock()
+        fake_sub.stream.return_value = iter([])
+        fake_cls = MagicMock(return_value=fake_sub)
+        import stock_analysis_agent.tools.strategy as mod
+        monkeypatch.setattr(mod, "resolve_subagent_model", lambda: "qwen3.8-flash")
+        monkeypatch.setattr(mod, "StockAnalysisAgent", fake_cls)
+        run_analyze_stock.invoke({"symbol": "600519.SH"})
+        fake_cls.assert_called_once()
+        assert fake_cls.call_args.kwargs["model"] == "qwen3.8-flash"
+
     def test_markdown_with_embedded_curly_braces_passes_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Embedded JSON-ish text is NOT parsed by the wrapper — it just
         # streams through as markdown.
@@ -403,6 +434,15 @@ def test_cache_query_includes_shell_and_dimensions() -> None:
         st._cache_query("600887.SH", dimensions=("基本面", "财务"), shell=True)
         == "True|600887.SH|基本面、财务"
     )
+
+
+def test_cache_query_is_order_insensitive() -> None:
+    """Dimension ordering must not split the cache — same set, same key."""
+    import stock_analysis_agent.tools.strategy as st
+
+    forward = st._cache_query("600887.SH", dimensions=("财务", "基本面"), shell=True)
+    reverse = st._cache_query("600887.SH", dimensions=("基本面", "财务"), shell=True)
+    assert forward == reverse
 
 
 def test_run_analyze_stock_returns_cached_report(

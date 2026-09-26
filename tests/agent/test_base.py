@@ -95,126 +95,170 @@ def test_base_agent_default_temperature_comes_from_settings() -> None:
     assert _NoopAgent().temperature == DEFAULT_TEMPERATURE
 
 
-def test_base_agent_build_graph_passes_api_key_from_env(
+def _patch_model_config(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    *,
+    model: str = "qwen3.8-max",
+    api_key: str = "config-supplied-key",
+    base_url: str | None = None,
 ) -> None:
-    """``_build_graph`` must source the API key from ``$ANTHROPIC_API_KEY``
-    via :func:`stock_analysis_agent.conf.settings.get_settings` and pass
-    it to ``init_chat_model``. We stub ``langchain.chat_models`` directly
-    so the assertion runs offline — no live model call, no provider
-    resolution needed for this test."""
+    """Point the settings loader at a temp ``model.json`` with one entry.
+
+    ``_build_graph`` resolves the API key/base URL via the real
+    ``get_settings``, so tests that exercise the real path need a registry
+    file instead of env vars. The monkeypatched ``MODEL_CONFIG_PATH`` and the
+    cleared ``_cached_settings`` cache ensure the temp entry is honored.
+    """
+    import json
+
+    from stock_analysis_agent.conf import settings as settings_module
+
+    entry: dict = {"model": model, "api_key": api_key}
+    if base_url is not None:
+        entry["base_url"] = base_url
+    cfg = tmp_path / "model.json"
+    cfg.write_text(json.dumps({model: entry}), encoding="utf-8")
+    monkeypatch.setattr(settings_module, "MODEL_CONFIG_PATH", str(cfg))
+    settings_module._cached_settings.cache_clear()
+
+
+def test_base_agent_build_graph_passes_api_key_from_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """``_build_graph`` must source the API key from the model registry via
+    :func:`stock_analysis_agent.conf.settings.get_settings` and pass it to
+    ``init_chat_model``. We stub ``langchain.chat_models`` directly so the
+    assertion runs offline — no live model call, no provider resolution."""
     import langchain.chat_models as chat_models_module
 
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-supplied-key")
+    _patch_model_config(monkeypatch, tmp_path, api_key="config-supplied-key")
 
-    # The settings loader is module-level cached; clear it so the env
-    # change above is honored (an earlier test may have warmed the cache).
-    from stock_analysis_agent.conf import settings as settings_module
-    settings_module._cached_settings.cache_clear()
-    try:
-        captured: dict = {}
+    captured: dict = {}
 
-        def _fake_init(model: str, **kwargs):  # type: ignore[no-untyped-def]
-            captured["model"] = model
-            captured.update(kwargs)
-            return object()  # placeholder; graph build only inspects kwargs
+    def _fake_init(model: str, **kwargs):  # type: ignore[no-untyped-def]
+        captured["model"] = model
+        captured.update(kwargs)
+        return object()  # placeholder; graph build only inspects kwargs
 
-        monkeypatch.setattr(chat_models_module, "init_chat_model", _fake_init)
+    monkeypatch.setattr(chat_models_module, "init_chat_model", _fake_init)
 
-        agent = _NoopAgent(model="override-model", max_tokens=512)
-        agent._build_graph()  # real path; settings + chat_models are patched
+    agent = _NoopAgent(model="override-model", max_tokens=512)
+    agent._build_graph()  # real path; settings + chat_models are patched
 
-        assert captured["model"] == "override-model"
-        assert captured["api_key"] == "env-supplied-key"
-        assert captured["max_tokens"] == 512
-        assert captured["model_provider"] == "anthropic"
-    finally:
-        settings_module._cached_settings.cache_clear()
+    assert captured["model"] == "override-model"
+    assert captured["api_key"] == "config-supplied-key"
+    assert captured["max_tokens"] == 512
+    assert captured["model_provider"] == "anthropic"
 
 
-def test_base_agent_build_graph_passes_base_url_from_env(
+def test_base_agent_build_graph_passes_base_url_from_config(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
     """``_build_graph`` forwards the resolved endpoint (``base_url``) to
     ``init_chat_model`` so a non-default gateway (MiniMax / DeepSeek) is
     reached instead of the SDK's default endpoint."""
     import langchain.chat_models as chat_models_module
 
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-supplied-key")
-    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.minimaxi.com/anthropic")
+    _patch_model_config(
+        monkeypatch, tmp_path, base_url="https://api.minimaxi.com/anthropic"
+    )
 
-    from stock_analysis_agent.conf import settings as settings_module
+    captured: dict = {}
 
-    settings_module._cached_settings.cache_clear()
-    try:
-        captured: dict = {}
+    def _fake_init(model: str, **kwargs):  # type: ignore[no-untyped-def]
+        captured["model"] = model
+        captured.update(kwargs)
+        return object()
 
-        def _fake_init(model: str, **kwargs):  # type: ignore[no-untyped-def]
-            captured["model"] = model
-            captured.update(kwargs)
-            return object()
+    monkeypatch.setattr(chat_models_module, "init_chat_model", _fake_init)
 
-        monkeypatch.setattr(chat_models_module, "init_chat_model", _fake_init)
+    agent = _NoopAgent()
+    agent._build_graph()
 
-        agent = _NoopAgent()
-        agent._build_graph()
-
-        assert captured["base_url"] == "https://api.minimaxi.com/anthropic"
-    finally:
-        settings_module._cached_settings.cache_clear()
+    assert captured["base_url"] == "https://api.minimaxi.com/anthropic"
 
 
 def test_base_agent_build_graph_passes_thinking(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
     """``_build_graph`` forwards the extended-thinking budget to
     ``init_chat_model`` as ``thinking={"type": "enabled", "budget_tokens": N}``
     when a budget is set, and ``None`` when thinking is disabled."""
     import langchain.chat_models as chat_models_module
 
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-supplied-key")
+    _patch_model_config(monkeypatch, tmp_path)
 
-    from stock_analysis_agent.conf import settings as settings_module
+    captured: dict = {}
 
-    settings_module._cached_settings.cache_clear()
-    try:
-        captured: dict = {}
+    def _fake_init(model: str, **kwargs):  # type: ignore[no-untyped-def]
+        captured["model"] = model
+        captured.update(kwargs)
+        return object()
 
-        def _fake_init(model: str, **kwargs):  # type: ignore[no-untyped-def]
-            captured["model"] = model
-            captured.update(kwargs)
-            return object()
+    monkeypatch.setattr(chat_models_module, "init_chat_model", _fake_init)
 
-        monkeypatch.setattr(chat_models_module, "init_chat_model", _fake_init)
+    _NoopAgent(thinking_budget_tokens=8192)._build_graph()
+    assert captured["thinking"] == {"type": "enabled", "budget_tokens": 8192}
 
-        _NoopAgent(thinking_budget_tokens=8192)._build_graph()
-        assert captured["thinking"] == {"type": "enabled", "budget_tokens": 8192}
+    _NoopAgent()._build_graph()
+    assert captured["thinking"] is None
 
-        _NoopAgent()._build_graph()
-        assert captured["thinking"] is None
-    finally:
-        settings_module._cached_settings.cache_clear()
+
+def test_base_agent_build_graph_wires_model_retry_middleware(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """``_build_graph`` must include ``_ModelRetryMiddleware`` in the chain,
+    positioned inside ``_StripThinkingMiddleware`` (so thinking is stripped
+    once, then the retry loop re-invokes the model) and before the tool-call
+    middlewares. It reuses the agent's ``max_retries``."""
+    import langchain.agents as agents_module
+
+    from stock_analysis_agent.agent.middleware import (
+        _FeedbackMiddleware,
+        _ModelRetryMiddleware,
+        _StripThinkingMiddleware,
+        _ToolRetryMiddleware,
+    )
+
+    _patch_model_config(monkeypatch, tmp_path)
+
+    captured: dict = {}
+
+    def _fake_create_agent(**kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(agents_module, "create_agent", _fake_create_agent)
+
+    _NoopAgent(max_retries=2)._build_graph()
+
+    types = [type(mw) for mw in captured["middleware"]]
+    assert _ModelRetryMiddleware in types
+    assert types.index(_StripThinkingMiddleware) < types.index(_ModelRetryMiddleware)
+    assert types.index(_ModelRetryMiddleware) < types.index(_FeedbackMiddleware)
+    assert _ToolRetryMiddleware in types
+    model_retry = captured["middleware"][types.index(_ModelRetryMiddleware)]
+    assert model_retry.max_retries == 2
 
 
 def test_base_agent_build_graph_raises_when_api_key_missing(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
-    """With no ``ANTHROPIC_API_KEY`` in env, ``_build_graph`` must raise
-    :class:`MissingAPIKeyError` before any LLM call is attempted."""
+    """With an empty ``api_key`` on the registry entry, ``_build_graph`` must
+    raise :class:`MissingAPIKeyError` before any LLM call is attempted."""
     from stock_analysis_agent.conf.settings import MissingAPIKeyError
 
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    _patch_model_config(monkeypatch, tmp_path, api_key="")
 
-    # The settings loader is module-level cached; clear it so the env
-    # delete above is honored (an earlier test may have warmed the cache).
-    from stock_analysis_agent.conf import settings as settings_module
-    settings_module._cached_settings.cache_clear()
-    try:
-        agent = _NoopAgent()
-        with pytest.raises(MissingAPIKeyError):
-            agent._build_graph()
-    finally:
-        settings_module._cached_settings.cache_clear()
+    agent = _NoopAgent()
+    with pytest.raises(MissingAPIKeyError):
+        agent._build_graph()
 
 
 # ---------------------------------------------------------------------------
@@ -327,8 +371,6 @@ def test_stream_emits_tool_events() -> None:
     model.responses[0] = make_ai("")
     model.responses[0].tool_calls = [make_tool_call("echo", {"value": "hi"}, "call_echo_1")]
 
-    agent = _NoopAgent(system_prompt="test", tools=[echo])
-
     # Build graph manually with the fake model so we can test event flow.
     from langchain.agents import create_agent
     from langchain.agents.middleware import AgentMiddleware
@@ -370,7 +412,6 @@ async def test_astream_returns_events() -> None:
     from tests.agent.conftest import ToolAwareFakeChatModel, make_ai
 
     model = ToolAwareFakeChatModel(responses=[make_ai("ok")])
-    agent = _NoopAgent(system_prompt="test", tools=[])
 
     # Build graph manually with the fake model.
     from langchain.agents import create_agent
@@ -436,10 +477,8 @@ async def test_base_agent_astream_yields_events() -> None:
 def test_tool_error_retries_then_raises_via_agent() -> None:
     """Spec test 4: when a tool raises transient errors, the agent
     must retry and eventually surface ToolExecutionError to the caller."""
-    import asyncio
     from langchain.agents import create_agent
     from langchain.tools import tool
-    from langchain_core.messages import ToolMessage
 
     from tests.agent.conftest import ToolAwareFakeChatModel, make_ai, make_tool_call
 
@@ -695,4 +734,127 @@ def test_usage_from_event_extracts_llm_output_usage() -> None:
         }}}},
     }
     assert _usage_from_event(event) == (10, 5)
+
+
+# ---------------------------------------------------------------------------
+# model I/O summary helpers — concise request/response logging
+# ---------------------------------------------------------------------------
+
+
+def test_summarize_content_short_string_unchanged() -> None:
+    """A short string content is returned verbatim."""
+    from stock_analysis_agent.agent.base import _summarize_content
+
+    assert _summarize_content("hi") == "hi"
+
+
+def test_summarize_content_truncates_long_string() -> None:
+    """A long string content is truncated to ``_SUMMARY_MAX_LEN`` + '...'."""
+    from stock_analysis_agent.agent.base import _SUMMARY_MAX_LEN, _summarize_content
+
+    result = _summarize_content("x" * 300)
+    assert result == "x" * _SUMMARY_MAX_LEN + "..."
+    assert len(result) == _SUMMARY_MAX_LEN + 3
+
+
+def test_summarize_content_extracts_text_blocks_from_list() -> None:
+    """A list content yields its concatenated ``text`` blocks (ignoring
+    non-text blocks such as thinking)."""
+    from stock_analysis_agent.agent.base import _summarize_content
+
+    content = [
+        {"type": "thinking", "thinking": "hmm"},
+        {"type": "text", "text": "hello"},
+        {"type": "text", "text": " world"},
+    ]
+    assert _summarize_content(content) == "hello world"
+
+
+def test_summarize_messages_includes_role_and_content() -> None:
+    """``_summarize_messages`` renders ``{role}: {content}`` per message in a
+    batch-shaped ``list[list[BaseMessage]]``."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    from stock_analysis_agent.agent.base import _summarize_messages
+
+    messages = [[SystemMessage(content="sys prompt"), HumanMessage(content="hello")]]
+    result = _summarize_messages(messages)
+    assert "system: sys prompt" in result
+    assert "human: hello" in result
+
+
+def test_summarize_messages_handles_flat_list() -> None:
+    """A flat ``list[BaseMessage]`` (single batch) is also accepted."""
+    from langchain_core.messages import HumanMessage
+
+    from stock_analysis_agent.agent.base import _summarize_messages
+
+    assert "human: hi" in _summarize_messages([HumanMessage(content="hi")])
+
+
+def test_summarize_model_output_includes_content_and_tool_call() -> None:
+    """``_summarize_model_output`` renders the content plus a
+    ``tool_call: name(args)`` line for each tool call."""
+    from langchain_core.messages import AIMessage, ToolCall
+
+    from stock_analysis_agent.agent.base import _summarize_model_output
+
+    msg = AIMessage(
+        content="the answer",
+        tool_calls=[ToolCall(name="load_skill", args={"name": "lark-doc"}, id="c1", type="tool_call")],
+    )
+    result = _summarize_model_output(msg)
+    assert "the answer" in result
+    assert "tool_call: load_skill" in result
+    assert "lark-doc" in result
+
+
+def test_summarize_model_output_truncates_tool_call_args() -> None:
+    """Oversized tool-call args are truncated with an ellipsis."""
+    from langchain_core.messages import AIMessage, ToolCall
+
+    from stock_analysis_agent.agent.base import _summarize_model_output
+
+    msg = AIMessage(
+        content="",
+        tool_calls=[ToolCall(name="t", args={"k": "x" * 300}, id="c1", type="tool_call")],
+    )
+    result = _summarize_model_output(msg)
+    assert "tool_call: t" in result
+    assert "..." in result
+
+
+def test_stream_logs_model_input_and_output(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A full `stream` run must emit INFO logs for each model input/output
+    via ``_log_model_event`` (default-visible request/response tracing)."""
+    import logging
+
+    from langchain.agents import create_agent
+    from langchain.agents.middleware import AgentMiddleware
+
+    from tests.agent.conftest import ToolAwareFakeChatModel, make_ai
+
+    class _NoRetry(AgentMiddleware):
+        def wrap_tool_call(self, request, handler):  # type: ignore[no-untyped-def]
+            return handler(request)
+
+        async def awrap_tool_call(self, request, handler):  # type: ignore[no-untyped-def]
+            return await handler(request)
+
+    model = ToolAwareFakeChatModel(responses=[make_ai("hello back")])
+    graph = create_agent(
+        model=model, tools=[], system_prompt="test", middleware=[_NoRetry()]
+    )
+    agent = _NoopAgent(system_prompt="test", tools=[])
+    agent._build_graph = lambda: graph  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.INFO, logger="stock_analysis_agent.agent.base"):
+        for _ in agent.stream([HumanMessage(content="hi")]):
+            pass
+
+    logged = [r.message for r in caplog.records]
+    assert any("model input" in m for m in logged)
+    assert any("model output" in m for m in logged)
 

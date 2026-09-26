@@ -61,6 +61,13 @@ def test_requires_at_least_three_questions_per_dimension() -> None:
     assert "阶段 0" in text, "missing the 'think first' phase"
 
 
+def test_requires_batching_by_data_source() -> None:
+    """阶段 1 must enforce merging queries per source + no re-query of one metric."""
+    text = _read_prompt()
+    assert "合并" in text, "missing per-source query merging instruction"
+    assert "禁止重复查询" in text, "missing no-re-query instruction"
+
+
 def test_requires_evidence_chain_and_confidence() -> None:
     """Every conclusion must carry an evidence chain and a confidence level."""
     text = _read_prompt()

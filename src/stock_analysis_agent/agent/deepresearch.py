@@ -107,7 +107,7 @@ class DeepResearchAgent(BaseAgent):
         cache_dir: str | Path | None = None,
         cache_ttl: float | None = DEFAULT_CACHE_TTL,
         include_shell_tool: bool = True,
-        thinking_budget_tokens: int = 8192,
+        thinking_budget_tokens: int = 4096,
         **kwargs: Any,
     ) -> None:
         """Initialize the agent.
@@ -131,8 +131,11 @@ class DeepResearchAgent(BaseAgent):
                 scripts. Set ``False`` to omit it — the shell tool is a
                 privilege escalation.
             thinking_budget_tokens: Extended-thinking ("think") budget in
-                tokens (default 8192). Deep research reasons heavily, so it
-                gets a large budget. Pass ``None`` to disable thinking.
+                tokens (default 4096). Deep research still reasons, but its
+                wall-clock is dominated by the many mechanical tool-selection
+                turns and growing context, not by thinking — so a smaller
+                ceiling than the orchestrator's is enough. Pass ``None`` to
+                disable thinking.
             **kwargs: Forwarded to :class:`BaseAgent` (``model``,
                 ``temperature``, ``name``, ...).
         """

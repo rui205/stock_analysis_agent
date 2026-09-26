@@ -36,6 +36,13 @@ def test_requires_deepresearch_fallback_when_data_insufficient() -> None:
     assert "编造" in text, "missing anti-fabrication rule"
 
 
+def test_requires_precise_deepresearch_dimensions() -> None:
+    """Deepresearch dimensions must name the concrete indicator, not a vague category."""
+    text = _read_prompt()
+    assert "具体指标" in text, "missing precise-dimension requirement"
+    assert "不要传" in text, "missing anti-vague-dimension instruction"
+
+
 def test_caps_deepresearch_at_three_calls() -> None:
     text = _read_prompt()
     assert "最多" in text and "3 次" in text, "missing 3-call cap"
@@ -50,3 +57,9 @@ def test_declares_data_sources_and_judgment_rationale_fields() -> None:
 def test_declares_stock_analysis_url_field() -> None:
     text = _read_prompt()
     assert '"stock_analysis_url"' in text, "missing stock_analysis_url in JSON example"
+
+
+def test_declares_evidence_reasoning_length_limits() -> None:
+    text = _read_prompt()
+    assert "evidence" in text and "500 字" in text, "missing evidence length limit"
+    assert "reasoning" in text and "≤ 500 字" in text, "missing reasoning length limit"

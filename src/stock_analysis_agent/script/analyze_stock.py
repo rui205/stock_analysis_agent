@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -156,6 +157,13 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--model", default=None,
+        help=(
+            "Model id to use — a key in model.json (e.g. deepseek-v4-pro). "
+            "Defaults to qwen3.8-max (千问) when omitted."
+        ),
+    )
+    parser.add_argument(
         "--verbose", action="store_true", help="Enable DEBUG-level logging.",
     )
     return parser
@@ -172,6 +180,12 @@ def run(args: argparse.Namespace) -> int:
     Split out from ``main`` so tests can drive it with a constructed
     ``argparse.Namespace`` and monkeypatched ``StockAnalysisAgent``.
     """
+    # 0. Model selection. An explicit ``--model`` overrides the process
+    # default; when omitted, the settings loader falls back to
+    # ``DEFAULT_MODEL`` (qwen3.8-max / 千问).
+    if args.model:
+        os.environ["MODEL"] = args.model
+
     # 1. Build agent. The system prompt is loaded from the bundled
     # ``prompts/system_prompt.md``. ``StockAnalysisAgent`` is a
     # schema-agnostic low-level agent, so the script (not the agent) owns

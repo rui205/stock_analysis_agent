@@ -151,6 +151,74 @@ class TestFormatStrategyIndex:
         assert "(no strategies available)" in _format_strategy_index()
 
 
+class TestTruncateOverlongFields:
+    """LLM output beyond a field's ``max_length`` must be clipped, not fatal."""
+
+    def test_truncates_overlong_evidence(self) -> None:
+        data = _valid_report().model_dump()
+        data["criterion_matches"][0]["evidence"] = "长" * 600
+        out = es._truncate_overlong_fields(StrategyMatchReport, data)
+        assert len(out["criterion_matches"][0]["evidence"]) == 500
+
+    def test_truncates_overlong_reasoning_and_criterion(self) -> None:
+        data = _valid_report().model_dump()
+        data["criterion_matches"][0]["reasoning"] = "长" * 501
+        data["criterion_matches"][0]["criterion"] = "长" * 201
+        out = es._truncate_overlong_fields(StrategyMatchReport, data)
+        assert len(out["criterion_matches"][0]["reasoning"]) == 500
+        assert len(out["criterion_matches"][0]["criterion"]) == 200
+
+    def test_truncates_nested_data_sources(self) -> None:
+        data = _valid_report().model_dump()
+        data["data_sources"]["stock_analysis"] = "长" * 2001
+        out = es._truncate_overlong_fields(StrategyMatchReport, data)
+        assert len(out["data_sources"]["stock_analysis"]) == 2000
+
+    def test_leaves_short_and_unbounded_fields_untouched(self) -> None:
+        data = _valid_report().model_dump()
+        out = es._truncate_overlong_fields(StrategyMatchReport, data)
+        assert out == data
+
+
+class TestRunAgentAndParseSurvivesOverlong:
+    """The parse boundary must repair (not reject) runaway LLM string length."""
+
+    def test_returns_report_with_truncated_evidence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        data = _valid_report().model_dump()
+        data["criterion_matches"][0]["evidence"] = "长" * 600
+        raw_json = json.dumps(data, ensure_ascii=False)
+        fake_events = [
+            {
+                "event": "on_chat_model_stream",
+                "data": {"chunk": SimpleNamespace(content=raw_json)},
+            }
+        ]
+
+        class _FakeAgent:
+            def __init__(self, **kwargs: Any) -> None:
+                pass
+
+            def stream(self, messages: Any) -> Any:
+                return iter(fake_events)
+
+        monkeypatch.setattr(es, "_load_system_prompt", lambda **kw: "dummy")
+        monkeypatch.setattr(es, "StrategyMatchAgent", _FakeAgent)
+
+        args = SimpleNamespace(
+            symbol="600519.SH",
+            strategy="value-investing",
+            include_shell_tool=False,
+            recursion_limit=80,
+        )
+        report = es._run_agent_and_parse(args)
+        assert isinstance(report, StrategyMatchReport)
+        assert len(report.criterion_matches[0].evidence) == 500
+
+
 class TestStripCodeFence:
     def test_strips_fences(self) -> None:
         assert _strip_code_fence("```json\n{}\n```") == "{}"
@@ -396,6 +464,7 @@ class TestRunFeishuOnlyDegradesToLocal:
             include_shell_tool=False,
             recursion_limit=80,
             output_dir=tmp_path,
+            model=None,
             verbose=False,
         )
         assert es.run(args) == es.EXIT_OK

@@ -1,0 +1,3 @@
+﻿entity_name,indicator_name,indicator_code,frequency,数据来源,2025,2024
+宏观数据（年）,中国:CPI:同比(%),EMM00072862,yearly,国家统计局,0,0.2
+宏观数据（年）,中国:社会消费品零售总额:同比(%),EMM00063473,yearly,国家统计局,3.7,3.5
